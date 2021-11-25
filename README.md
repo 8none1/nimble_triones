@@ -28,3 +28,9 @@ It works.  Kinda.
 I still need to try and add OTA support etc.
 If anyone out there understands C++ and would like to take this idea and make it useable, please feel free and save me from this hell.
 
+
+# Problems that still exist
+ - The Bluetooth lights lock up some times.  It seems the only thing you can do to fix it is power cycle them
+ - If you enable OTA then you suddenly can't connect to BLE devices (yes, the whole point of this endevour was to enable OTA)
+ - If you enable mDNS you can't connect to BLE devices
+
