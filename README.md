@@ -31,6 +31,8 @@ If anyone out there understands C++ and would like to take this idea and make it
 
 # Problems that still exist
  - The Bluetooth lights lock up some times.  It seems the only thing you can do to fix it is power cycle them
+   - I think I might have a bit of a better understanding about what's happening here now.  If you ask the device for the status, and then fail to read that status and leave it kind of hanging around, then the device starts sending back malformed packets. If you leave enough of these queued up, Bluetooth stops responding on the device.  Read your notifications!
+
  - If you enable OTA then you suddenly can't connect to BLE devices (yes, the whole point of this endevour was to enable OTA)
  - If you enable mDNS you can't connect to BLE devices
 

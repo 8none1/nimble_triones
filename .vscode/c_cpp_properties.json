@@ -229,6 +229,7 @@
                 "/home/will/source/arduino/my_projects/libraries/NimBLE-Arduino/src",
                 "/home/will/.arduino15/packages/esp32/hardware/esp32/2.0.1/libraries/WiFi/src",
                 "/home/will/source/arduino/libraries/ArduinoMqttClient/src",
+                "/home/will/source/arduino/my_projects/libraries/ArduinoJson/src",
                 "/home/will/.arduino15/packages/esp32/tools/xtensa-esp32-elf-gcc/gcc8_4_0-esp-2021r2/xtensa-esp32-elf/include/c++/8.4.0",
                 "/home/will/.arduino15/packages/esp32/tools/xtensa-esp32-elf-gcc/gcc8_4_0-esp-2021r2/xtensa-esp32-elf/include/c++/8.4.0/xtensa-esp32-elf",
                 "/home/will/.arduino15/packages/esp32/tools/xtensa-esp32-elf-gcc/gcc8_4_0-esp-2021r2/xtensa-esp32-elf/include/c++/8.4.0/backward",

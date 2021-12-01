@@ -3,6 +3,8 @@
 //#include <WiFiUdp.h>
 //#include <ArduinoOTA.h>
 #include <ArduinoMqttClient.h>
+#include <ArduinoJson.h>
+#include <string>
 #include "wificreds.h"
 
 
@@ -24,43 +26,61 @@ NimBLERemoteDescriptor* pDsc = nullptr;
 NimBLERemoteService* nSvc = nullptr;
 NimBLERemoteCharacteristic* nChr = nullptr;
 NimBLERemoteDescriptor* nDsc = nullptr;
-NimBLEScan* pBLEScan =NimBLEDevice::getScan();
-//pBLEScan = NimBLEDevice::getScan();
 
 // MQTT Stuff
 WiFiClient wifiClient;
 MqttClient mqttClient(wifiClient);
-const char broker[] = "smarthome";
+//const char broker[] = "smarthome";
+const char broker[] = "192.168.42.121";
 const int  port     = 1883;
-const char topic[] = "arduino/simple";
+const char MQTT_PUB_TOPIC[] = "triones/status"; // Where output from this code goes
+const char MQTT_SUB_TOPIC[] = "triones/control"; // Where this code receives instructions
 
+// Forward declarations
+// I don't know how to C++
+bool setRGB(uint8_t, uint8_t, uint8_t, uint8_t);
+bool findTrionesDevices();
+bool getStatus();
+bool connect(NimBLEAddress);
+bool turnOn();
+bool turnOff();
+bool setMode(uint8_t, uint8_t);
 
+void sendMqttMessage(std::string message) {
+    Serial.print("Sending mqtt: ");
+    Serial.println(message.c_str());
+    mqttClient.beginMessage(MQTT_PUB_TOPIC);
+    mqttClient.print(message.c_str());
+    mqttClient.endMessage();
+}
 
 class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
     void onResult(NimBLEAdvertisedDevice* advertisedDevice) {
-      //Serial.printf("Advertised Device: %s \n", advertisedDevice->toString().c_str());
-      if (advertisedDevice->haveName()) {
-            String device_name = advertisedDevice->getName().c_str();
-            if(device_name.indexOf("Triones") > -1) {
-                // Finally found what we're looking for
-                String addr = advertisedDevice->getAddress().toString().c_str();
+        std::string trionesName ("Triones"); // The name of the thing we're looking for
+        if (advertisedDevice->haveName()) {
+            std::string deviceName = advertisedDevice->getName();
+            if (deviceName.find(trionesName) != std::string::npos) {
+                std::string addr =  advertisedDevice->getAddress().toString();
                 int rssi = advertisedDevice->getRSSI();
-                Serial.print("XXX Device Name: ");
-                Serial.println(device_name);
-                Serial.println(device_name);
-                mqttClient.beginMessage(topic);
-                String json_str = "{\"deviceName\":\""+device_name;
-                json_str += "\", \"MAC\":\"" + addr;
-                json_str += "\",\"RSSI\":"+String(rssi);
-                json_str += "}";
-                mqttClient.print(json_str);
+                std::string jsonString;
+                jsonString += "{\"mac\":\"";
+                jsonString += addr;
+                jsonString += "\", \"name\":\"";
+                jsonString += deviceName;
+                jsonString += "\", \"rssi\":";
+                jsonString += std::to_string(rssi);
+                jsonString += ", \"scanHost\",\"";
+                jsonString += WiFi.localIP().toString().c_str();
+                jsonString += "\"}";
+                Serial.println(jsonString.c_str());
+                mqttClient.beginMessage(MQTT_PUB_TOPIC);
+                mqttClient.print(jsonString.c_str());
                 mqttClient.endMessage();
             }
-      }
+        }
     }
 };
 
-/** Notification / Indication receiving handler callback */
 void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify){
     // The protocol for my devices looks like 0x66,0x4,power,mode,0x20,speed,red,green,blue,white,0x3,0x99
     // This is a response to a status update
@@ -73,38 +93,111 @@ void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData,
     // ['0x66', '0x4', '0x23', '0x41', '0x20', '0x1', '0x0', '0xff', '0x0', '0x0', '0x3', '0x99']
     // json_status = json.dumps({"mac":self.mac, "power":power, "rgb":rgb, "speed": speed, "mode":mode})
     
-    // std::string str = (isNotify == true) ? "Notification" : "Indication";
-    // str += " from ";
-    // /** NimBLEAddress and NimBLEUUID have std::string operators */
-    // str += std::string(pRemoteCharacteristic->getRemoteService()->getClient()->getPeerAddress());
-    // str += ": Service = " + std::string(pRemoteCharacteristic->getRemoteService()->getUUID());
-    // str += ", Characteristic = " + std::string(pRemoteCharacteristic->getUUID());
-    // str += ", Value = " + std::string((char*)pData, length);
-    // Serial.println(str.c_str());
-    if (length == 12) {
-        // Some rudimentary checks that this is what we're looking for
-        if ((pData[0] == 0x66) && (pData[11] == 0x99)) {
-            String power_state = (pData[2] == 0x23) ? "true" : "false";
-            int mode = pData[3];
-            int speed = pData[5];
-            int red = pData[6];
-            int green = pData[7];
-            int blue = pData[8];
-            String addr = pRemoteCharacteristic->getRemoteService()->getClient()->getPeerAddress().toString().c_str();
-            // int white = pData[9];
-            // {"mac":"aa:bb:cc:dd:ee:ff", "power":false, "rgb":[255,255,255], "speed":255, "mode": 255}
-            char buffer[95];
-            sprintf(buffer, "{\"mac\":\"%s\", \"power\":%s, \"rgb\":[%d,%d,%d], \"speed\", %d, \"mode\":%d}", addr, power_state, red, green, blue, speed, mode);
-            mqttClient.beginMessage(topic);
-            mqttClient.print(buffer);
+        if (length == 12) {
+            // Some rudimentary checks that this is what we're looking for
+            if ((pData[0] == 0x66) && (pData[11] == 0x99)) {
+                String power_state = (pData[2] == 0x23) ? "true" : "false";
+                uint8_t mode  = pData[3];
+                uint8_t speed = pData[5];
+                uint8_t red   = pData[6];
+                uint8_t green = pData[7];
+                uint8_t blue  = pData[8];
+                std::string addr = pRemoteCharacteristic->getRemoteService()->getClient()->getPeerAddress().toString();
+                char buffer[95];
+                sprintf(buffer, "{\"mac\":\"%s\", \"power\":%s, \"rgb\":[%u,%u,%u], \"speed\", %u, \"mode\":%u}", addr.c_str(), power_state, red, green, blue, speed, mode);
+                mqttClient.beginMessage(MQTT_PUB_TOPIC);
+                mqttClient.print(buffer);
+                mqttClient.endMessage();
+            }
+        }
+}
+
+void mqttCallback(int messageSize) {
+    // I was trying to avoid doing all the work in one callback function
+    // but here we are.  I will trying a break this out later, once things work
+    Serial.println("Received mqtt message");
+    String mqttTopic = mqttClient.messageTopic();
+    if (mqttTopic == "triones/control") {
+        StaticJsonDocument<200> doc;  // Shrink this later?
+        uint8_t buffer[messageSize];
+        mqttClient.read(buffer, sizeof(buffer));
+        deserializeJson(doc, buffer);
+
+        if (doc["action"] == "ping") {
+            String jsonStr;
+            jsonStr += "{\"mac\":\"";
+            jsonStr += WiFi.macAddress();
+            jsonStr += "\",\"active\":true}";
+            mqttClient.beginMessage(MQTT_PUB_TOPIC);
+            mqttClient.print(jsonStr);
             mqttClient.endMessage();
+            return;
+        }
+
+        if (doc["action"] == "scan") {
+            findTrionesDevices();
+            return;
+        }
+
+        else if (doc["action"] == "status") {
+            const char* mac = doc["mac"];
+            Serial.println("Get status of: ");
+            Serial.println(mac);
+            NimBLEAddress addr = NimBLEAddress(mac);
+            if (connect(addr)) {
+                getStatus();
+                // If we tear down the connection before the callback has fired
+                // we loose the status data, and the buffers fill up on the remote device
+                // I tried to explicity read the chr, but that didn't work.  This does
+                // work though.  ?  
+                delay(500);
+                pClient->disconnect();
+            }
+            return;
+        }
+
+        else if (doc["action"] == "set") {
+            const char* mac = doc["mac"];
+            NimBLEAddress addr = NimBLEAddress(mac);
+            if (connect(addr)) {
+                
+                if (!doc["power"].isNull()) {
+                    if (doc["power"] == true) {
+                        Serial.println("Turning on");
+                        turnOn();
+                    }
+                }
+
+                if (doc["rgb"]) {
+                    setRGB(doc["rgb"][0], doc["rgb"][1], doc["rgb"][2], doc["percentage"]);
+                }
+
+                if (doc["mode"]) {
+                    if (!doc["speed"].isNull()){
+                        setMode(doc["mode"], doc["speed"]);
+                    } else {
+                        setMode(doc["mode"], 127);
+                    }
+                }
+                if (!doc["power"].isNull()) {
+                    // Power off should be the last thing we do so
+                    // that all the other settings can be applied
+                    if (doc["power"] == false) {
+                        Serial.println("Turning off");
+                        if (turnOff()) {
+                            Serial.println("Turn off OK");
+                        };
+                    }
+                }
+
+                pClient->disconnect();
+            } else {
+                Serial.print("Failed to connect to Triones device: ");
+                Serial.println(mac);
+                sendMqttMessage("{\"state\":false}");
+            }
         }
     }
-    // for (size_t i=0; i<length; i++) {
-    //     Serial.print(pData[i], HEX);
-    //     Serial.print(":");
-    // };
-    //Serial.println("\n^ hex");
 }
 
 
@@ -116,8 +209,7 @@ bool connect(NimBLEAddress bleAddr){
     } else {
         // This should be the happy path
         if (pClient->isConnected()) {
-            Serial.println("Connected correctly");
-            Serial.print("RSSI:");
+            Serial.print("Connected correctly.  RSSI: ");
             Serial.println(pClient->getRssi());
             //pClient->setConnectionParams(12,12,0,51); // Do we really need this?  Seems to work without it.
             return true;
@@ -128,15 +220,6 @@ bool connect(NimBLEAddress bleAddr){
 }
 
 bool setupSvcAndChr(){
-    // Ok, so most of this seems redundant.  Setting these services up here
-    // doesn't make them persist.  If you want to write to one later, 
-    // you have to set the whole thing up again.  All this whole haystack is
-    // doing is testing that the SVCs and CHARs exist and do what we expect them to.
-    // There is some value in that, but I'm not convinced it's worth doing.
-    // Update:  It would make sense that if you pClient->disconnect then the SVCs
-    // and CHARs would go away.  So we'll do this here to make sure that the device
-    // can do the things we would expect it to do.
-
     if (pClient->isConnected()) {
         pSvc = pClient->getService(MAIN_SERVICE);
         nSvc = pClient->getService(NOTIFY_SERVICE);
@@ -191,29 +274,52 @@ bool writeData(const uint8_t * payload, size_t length){
             Serial.println("Failed to write data.");
         }
     }
+    
     return false;
 }
 
 bool turnOn(){
     uint8_t payload[3]= {0xCC, 0x23, 0x33};
-    return writeData(payload, 3);
+    if (writeData(payload, 3)) {
+        return true;
+    } else {
+        sendMqttMessage("{\"state\":false}");
+    }
+    return false;
 }
 
 bool turnOff(){
     uint8_t payload[3] = {0xCC, 0x24, 0x33};
-    return writeData(payload,3);
+    if (writeData(payload,3)){
+        return true;
+    } else {
+        sendMqttMessage("{\"state\":false}");
+        return false;
+    }
 }
 
-bool setRGB(uint8_t red, uint8_t green, uint8_t blue, uint8_t brightness=100) {
+bool setRGB(uint8_t red, uint8_t green, uint8_t blue, uint8_t brightness) {
     if (brightness == 0) {
         return turnOff();
+    } else {
+        // Not sure if we need to do this or not.  Test it.
+        turnOn();
     }
     uint8_t rgb[7] = {0x56, 00, 00, 00, 00, 0xF0, 0xAA};
-    uint8_t scale_factor = brightness / 100;
+    float scale_factor = brightness / 100.0;
     rgb[1] = red * scale_factor;
     rgb[2] = green * scale_factor;
     rgb[3] = blue * scale_factor;
-    return writeData(rgb, 7);
+    Serial.println("Set RGB: ");
+    Serial.println(rgb[1]);
+    Serial.println(rgb[2]);
+    Serial.println(rgb[3]);
+    if (writeData(rgb, 7)) {
+        return true;
+    } else {
+        writeData(rgb, 7);
+        return false;
+    }
 }
 
 bool setMode(uint8_t mode, uint8_t speed=127){
@@ -251,7 +357,12 @@ bool setMode(uint8_t mode, uint8_t speed=127){
 
 bool getStatus(){
     uint8_t payload[3] = {0xEF, 0x01, 0x77};
-    return writeData(payload, 3);
+    if (writeData(payload, 3)) {
+        return true;
+    } else {
+        sendMqttMessage("Failed request status from device");
+        return false;
+    }
 }
 
 bool findTrionesDevices(){
@@ -260,17 +371,27 @@ bool findTrionesDevices(){
         return false;
     }
     if (pBLEScan->isScanning()) {
+        // Somehow we're already scanning
         return false;
     }
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks(), false);
-    pBLEScan->setActiveScan(false);
+    //pBLEScan->setActiveScan(false);
     //pBLEScan->setInterval(97); // How often the scan occurs / switches channels; in milliseconds,
     //pBLEScan->setWindow(37);  // How long to scan during the interval; in milliseconds.
-    pBLEScan->setMaxResults(0); // do not store the scan results, use callback only.
-    Serial.println("Doing scan for 20 seconds...");
+    // I'm not sure that this works the way I thought it did.  I wonder if a pointer to
+    // the result is getting passed to the callback, and then getting removed because
+    // either the scan goes out of scope, or a new device is found and then it's removed.
+    // It seems that would be bad way to work, so maybe it doesn't, but.. ?
+    // Until I can get the callback working reliably then I'm going to comment this out.
+    //pBLEScan->setMaxResults(0); // do not store the scan results, use callback only.
+    Serial.println("Doing scan for 20 seconds... this blocks");
     pBLEScan->start(20,false);//, nullptr, false);
+    pBLEScan->stop();
+    delay(1000); // Give time for the callbacks to finish up before this all goes out of scope
+    Serial.println("Done scanning");
     return true;
 }
+
 
 void setup (){
     Serial.begin(115200);
@@ -323,62 +444,30 @@ void setup (){
     // ArduinoOTA.begin();
 
     // Setup MQTT
-    if (!mqttClient.connect(broker, port)) Serial.println("MQTT connection failed!");
-    mqttClient.subscribe(topic);
-
+    if (mqttClient.connect(broker, port)) {
+        mqttClient.subscribe(MQTT_SUB_TOPIC);
+        mqttClient.onMessage(mqttCallback);
+    } else {
+        Serial.println("MQTT connection failed!");
+    }
     NimBLEDevice::setPower(ESP_PWR_LVL_P9); /** +9db */
 }
 
 
 void loop (){
-    mqttClient.poll();
-    int messageSize = mqttClient.parseMessage();
-    if (messageSize) {
-        Serial.print("Received a message with topic '");
-        Serial.print(mqttClient.messageTopic());
-        Serial.print("', length ");
-        Serial.print(messageSize);
-        Serial.println(" bytes:");
-        while (mqttClient.available()) {
-            Serial.print((char)mqttClient.read());
-        }
-        Serial.println();
-    }
+    // TODO next:  Add scan and status support to call functions on mqtt receive 
     
-    Serial.println("Starting loop");
-    NimBLEAddress addr = NimBLEAddress("78:82:a4:00:05:1e");
-    Serial.println("Set address");
-    bool a = connect(addr);
-    Serial.println("Connect run");
-    Serial.println(a);
-    if (a) {
-        Serial.println("MAIN LOOP: Connected to device");
-        delay(1000);
-        Serial.println("Turning on...");
-        turnOn();
-        delay(1000);
-        Serial.println("Getting status");
-        getStatus();
-        delay(1000);
-        setRGB(255,0,0);
-        delay(500);
-        setRGB(0,255,0);
-        delay(500);
-        setRGB(0,0,255);
-        delay(500);
-        setRGB(255,0,0);
-        delay(500);
-        setMode(0x2E,20);
-        delay(5000);
-        Serial.println("Turning off");
-        turnOff();
-        delay(1000);
-    } else Serial.println("MAIN LOOP: Failed to connect.");
-    findTrionesDevices();
-    Serial.println("2 second pause");
-    delay(2000);
-    Serial.println("Waiting 10s until next loop.");
-    delay(10000);
+    mqttClient.poll();
+    //int messageSize = mqttClient.parseMessage();
+     
+    //Serial.println("Starting loop");
+    //NimBLEAddress addr = NimBLEAddress("78:82:a4:00:05:1e");
+    //bool a = connect(addr);
+    
+    //} else Serial.println("MAIN LOOP: Failed to connect.");
+    //findTrionesDevices();
+    //Serial.println("Waiting 10s until next loop.");
+    //delay(10000);
     /////////////////////////////////////
     // Once an hour announce all the triones devices we can see.
     // Process incoming MQTT requests
