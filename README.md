@@ -34,10 +34,16 @@ The main problem is the very unreliable initial connection. I'm still trying to 
 
 I also discovered that if you keep a callback registered and the connection up then the lights will tell you when someone presses the power button on the remote to power the lights on.  But that's all it does.  It doesn't tell you when they change colour or anything, so it's pretty much useless. Much like the rest of these lights.
 
+Update 2021-12-03:  The current version pretty much works.  It connects first time about 80% of the time, if you're in range. Reconnections now work and make it a lot faster.  
+The big big big problem is still the range of the ESP32.  My iPhone 8 can talk to the lights from the other end of the house, but the ESP32 struggles at half that distance.  (I don't live in a castle).
+I might try tweaking the connection params some more.
+In the meantime, it needs some tidy up but it's ready for testing and replacing my Pi based bluepy version.
+
+
 # Problems that still exist
  - The Bluetooth lights lock up some times.  It seems the only thing you can do to fix it is power cycle them
    - I think I might have a bit of a better understanding about what's happening here now.  If you ask the device for the status, and then fail to read that status and leave it kind of hanging around, then the device starts sending back malformed packets. If you leave enough of these queued up, Bluetooth stops responding on the device.  Read your notifications!
-   - Yeah, maybe not.  I think this might be more down to the performance of the BT antenna on the ESP32 and wifi co-existence.
+   - Edit: Yeah, maybe not.  I think this might be more down to the performance of the BT antenna on the ESP32 and wifi co-existence.
 
  - If you enable OTA then you suddenly can't connect to BLE devices (yes, the whole point of this endevour was to enable OTA).  Edit: this might not be true.
  - If you enable mDNS you can't connect to BLE devices.  Edit: this might not be true.
@@ -46,9 +52,9 @@ I also discovered that if you keep a callback registered and the connection up t
 
  vs the cheapest Wifi controlled lights I can find on Amazon for £15:  https://amzn.to/32XYTLv  (affiliate link)
 
- If I hadn't already bought a load of the Bluetooth ones, I would spend my money on the Wifi connected ones instead.  I haven't checked, but I would guess that the wifi ones are using the Tuya platform.  Tuya have documented their API and you can (currently) get an API key for free.  There are lots of projects out there to help you.  Save yourself a lot of time.
+ If I hadn't already bought a load of the Bluetooth ones, I would spend my money on the Wifi connected ones instead.  I haven't checked, but I would guess that the wifi ones are using the Tuya platform.  Tuya have documented their API and you can (currently) get an API key for free.  There are lots of projects out there to help you.  Save yourself a lot of time and bother.
 
- 
+
 
 
 
