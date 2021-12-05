@@ -1,7 +1,7 @@
 #include <NimBLEDevice.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
-//#include <ArduinoOTA.h>
+//#include <ArduinoOTA.h> // This does work, but I /think/ it effects the reliability of BTLE. So disabled here.
 #include <ArduinoMqttClient.h>
 #include <ArduinoJson.h>
 #include <string>
@@ -16,6 +16,9 @@
 #define LED 2
 
 
+// Store IP address globally
+IPAddress ipAddr;
+
 //NimBLE Stuff
 const NimBLEUUID NOTIFY_SERVICE ("FFD0");
 const NimBLEUUID NOTIFY_CHAR    ("FFD4");
@@ -25,11 +28,11 @@ const NimBLEUUID WRITE_CHAR     ("FFD9");
 // MQTT Stuff
 WiFiClient wifiClient;
 MqttClient mqttClient(wifiClient);
-const char broker[] = "smarthome";
-// const char broker[] = "192.168.42.121";
-const int  port     = 1883;
-const char MQTT_PUB_TOPIC[] = "triones/status"; // Where output from this code goes
-const char MQTT_SUB_TOPIC[] = "triones/control"; // Where this code receives instructions
+const char broker[] = "mqtt";
+const int  port = 1883;
+std::string mqttPubTopic;
+std::string mqttControlTopic;
+std::string mqttGlobalTopic;
 
 // Forward declarations
 // I don't know how to C++
@@ -38,22 +41,26 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t *payload, size_t len);
 unsigned long previousMillis = 0;
 
 void sendMqttMessage(const JsonDocument& local_doc) {
-    mqttClient.beginMessage(MQTT_PUB_TOPIC);
+    mqttClient.beginMessage(mqttPubTopic.c_str());
     serializeJson(local_doc, mqttClient);
     mqttClient.endMessage();
-}
-
+};
 void sendMqttMessage(std::string message) {
-    mqttClient.beginMessage(MQTT_PUB_TOPIC);
+    mqttClient.beginMessage(mqttPubTopic.c_str());
     mqttClient.print(message.c_str());
+    int c = mqttClient.endMessage();
+};
+void sendMqttMessage(const __FlashStringHelper * ifsh) {
+    const char *p = (const char PROGMEM *) ifsh;
+    mqttClient.beginMessage(mqttPubTopic.c_str());
+    mqttClient.print(p);
     mqttClient.endMessage();
-}
-
+};
 
 
 class ClientCallbacks : public NimBLEClientCallbacks {
     void onConnect(NimBLEClient * pClient) {
-        pClient->updateConnParams(120,120,120,60); // This is more lenient 
+        //pClient->updateConnParams(120,120,120,60); // This is more lenient 
         //pClient->setConnectionParams(7,7,0,200);// This is what the lights would like us to use.  It does work, but it doesn't leave much room to manoeuvre 
         digitalWrite(LED, !digitalRead(LED));
     };
@@ -85,10 +92,10 @@ class ClientCallbacks : public NimBLEClientCallbacks {
         //     return false;
         // }
 
-        // We're just going to accept what they ask for, anything to try and get it to work
+        // We're just going to accept what they ask for, anything to try and get it to work.
         // Update: this might be a bad idea, because we have to trust that what the devices are asking for is actually reasonable
         // and that's probably not a safe assumption.  So, once the call back stuff is fixed, think about this some more...
-        // some initial testing says letting the lights do what they want makes them a bit happier and easier to talk to.
+        // Thought about is some more.. some initial testing says letting the lights do what they want makes them a bit happier and easier to talk to. So leaving this like this for now.
         digitalWrite(LED, !digitalRead(LED));
         return true;        
     };
@@ -115,75 +122,90 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
     }
 };
 
-
-
 void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify){
-    // // This is a response to a status update.  The protocol for my devices looks like:
-    //   0x66, 0x4, power, mode, 0x20, speed, red, green, blue, white, 0x3, 0x99
-    // Off but red
-    // ['0x66', '0x4', '0x24', '0x41', '0x20', '0x1', '0xff', '0x0', '0x0', '0x0', '0x3', '0x99']
-    // Off but blue
-    // ['0x66', '0x4', '0x24', '0x41', '0x20', '0x1', '0x0', '0x0', '0xff', '0x0', '0x3', '0x99']
-    // On but green
-    // ['0x66', '0x4', '0x23', '0x41', '0x20', '0x1', '0x0', '0xff', '0x0', '0x0', '0x3', '0x99']
-
-    Serial.println("In notify callback");
-        if (length == 12) {
-            if ((pData[0] == 0x66) && (pData[11] == 0x99)) {
-                digitalWrite(LED, !digitalRead(LED));
-                String power_state = (pData[2] == 0x23) ? "true" : "false";
-                uint8_t mode  = pData[3];
-                uint8_t speed = pData[5];
-                uint8_t red   = pData[6];
-                uint8_t green = pData[7];
-                uint8_t blue  = pData[8];
-                std::string addr = pRemoteCharacteristic->getRemoteService()->getClient()->getPeerAddress().toString();
-                char buffer[95];
-                sprintf(buffer, "{\"mac\":\"%s\", \"power\":%s, \"rgb\":[%u,%u,%u], \"speed\", %u, \"mode\":%u}", addr.c_str(), power_state, red, green, blue, speed, mode);
-                sendMqttMessage(buffer);
-                digitalWrite(LED, !digitalRead(LED));
-            }
+    if (length == 12) {
+        if ((pData[0] == 0x66) && (pData[11] == 0x99)) { // static
+            digitalWrite(LED, !digitalRead(LED));
+            String power_state = (pData[2] == 0x23) ? "true" : "false"; // 0x23 is on, 0x24 is off
+            const uint8_t mode  = pData[3]; // See mode section for full list
+            const uint8_t speed = pData[5]; // 1 fast, 255 slow
+            const uint8_t red   = pData[6]; // R
+            const uint8_t green = pData[7]; // G
+            const uint8_t blue  = pData[8]; // B
+            const std::string addr = pRemoteCharacteristic->getRemoteService()->getClient()->getPeerAddress().toString();
+            char buffer[95];
+            sprintf(buffer, "{\"mac\":\"%s\", \"power\":%s, \"rgb\":[%u,%u,%u], \"speed\", %u, \"mode\":%u}", addr.c_str(), power_state, red, green, blue, speed, mode);
+            sendMqttMessage(buffer);
+            digitalWrite(LED, !digitalRead(LED));
         }
+    }
 }
 
 void mqttCallback(int messageSize) {
     digitalWrite(LED, !digitalRead(LED));
-    Serial.println("Received mqtt message");
-    String mqttTopic = mqttClient.messageTopic();
-    if (mqttTopic == "triones/control") {
-        StaticJsonDocument<200> doc;  // Shrink this later, 200 seems OK though.  100 caused stack overflows
-        deserializeJson(doc, mqttClient);
-        if (doc["action"].isNull()) {
-            Serial.println("No action set");
-            sendMqttMessage("{\"state\":false, \"message\":\"No action set\"}");
-            return;
-        }
-        
-        std::string action = doc["action"];
-        std::string uuid;
-        // e.g. 6e3eec5c-5512-11ec-bf63-0242ac130002
+    std::string mt = mqttClient.messageTopic().c_str();
+    // Schema looks like this:
+    //   triones/control/<myIpAddr> - control devices on this ESP32.  JSON payload with instructions.
+    //   triones/control/global     - send message to all ESP32s
+    //   triones/stats/<myIpAddr>   - Status messages as JSON
+    //
+    // Payload looks like:
+    /* {
+        // Needed for every message
+        "action" : "ping" | "scan" | "set" ,
 
-        if (!doc["uuid"].isNull()) {
-            std::string uuid = doc["uuid"];
-        } else {
-            std::string uuid = "unknown";
-        }
+        // Needed for most messages
+        "mac" : "aa:bb:cc:dd:ee:ff" (a mac address as a string),
+ 
+        // action specific
+        "disconnect" - (needs a mac),
 
+    */
+
+    if ( (mt != mqttControlTopic) && (mt != mqttGlobalTopic) ) {
+        // This message was not for me, so do nothing
+        Serial.println("Not a message for me");
+        sendMqttMessage(F("{\"state\":false, \"message\":\"Message wasnt for me\"}"));
+        return;
+    }
+
+    StaticJsonDocument<200> doc;  // Shrink this later? 200 seems OK though.  100 caused stack overflows
+    DeserializationError err = deserializeJson(doc, mqttClient);
+
+    if (err) {
+        Serial.println(F("Couldn't understand the JSON object. Giving up"));
+        sendMqttMessage(F("{\"state\":false, \"message\":\"Invalid JSON\"}"));
+        return;
+    }
+
+    std::string action = doc["action"];
+    if ( doc["action"].isNull() ) {
+        Serial.println("No action supplied.");
+        sendMqttMessage(F("{\"state\":false, \"message\":\"No action set\"}"));
+        return;
+    };
+
+    // Deal with global requests
+    if (mt == mqttGlobalTopic) {
         if (action == "ping") {
             StaticJsonDocument<64> ping_doc;
-            ping_doc["ipAddr"] = WiFi.localIP().toString().c_str();
+            ping_doc["ipAddr"] = ipAddr.toString();
             ping_doc["active"] = true;
             sendMqttMessage(ping_doc);
             digitalWrite(LED, !digitalRead(LED));
             return;
         }
-
         if (action == "scan") {
             findTrionesDevices();
             digitalWrite(LED, !digitalRead(LED));
             return;
         }
+       return;
+    };
 
+
+    // Deal with my requests
+    if (mt == mqttControlTopic) {
         if (action == "disconnect") {
             const char* mac = doc["mac"];
             NimBLEAddress addr = NimBLEAddress(mac);
@@ -193,8 +215,8 @@ void mqttCallback(int messageSize) {
                 if (pClient->isConnected()) {
                     Serial.println("Disconnecting client");
                     pClient->disconnect();
-                };
-            };
+                }
+            }
             return;
         };
 
@@ -202,25 +224,29 @@ void mqttCallback(int messageSize) {
             digitalWrite(LED, !digitalRead(LED));
             if (doc["mac"].isNull()){
                 Serial.println("Can't get status, no MAC");
-                sendMqttMessage("\"state\":false, \"message\":\"No MAC for status\"}");
+                sendMqttMessage(F("\"state\":false, \"message\":\"No MAC for status\"}"));
             } else {
                 const char* mac = doc["mac"];
                 NimBLEAddress addr = NimBLEAddress(mac);
                 uint8_t payload[] = {0xEF, 0x01, 0x77};
                 if (do_write(addr, payload, sizeof(payload))) {
-                    Serial.println("Status request successful");
+                    Serial.println(F("Status request successful"));
                 } else {
-                    Serial.println("Status failed");
-                    sendMqttMessage("{\"state\":false}");
-                };
-            };
+                    Serial.println(F("Status failed"));
+                    sendMqttMessage(F("{\"state\":false}"));
+                }
+            }
             return;
-        }
+        };
 
-        else if (action == "set") {
+        if (action == "set") {
+            // Deal with writing requests to the lights
+            // We can support compound sets in the JSON object.  They seem to work
+            // but not extensively tested.  If they break, put the returns back in and
+            // do one at a time.
             if (doc["mac"].isNull()){
                 Serial.println("Cant do SET, no MAC address");
-                sendMqttMessage("{\"state\":false, \"message\":\"No MAC for SET\"}");
+                sendMqttMessage(F("{\"state\":false, \"message\":\"No MAC for SET\"}"));
                 return;
             }
 
@@ -228,21 +254,22 @@ void mqttCallback(int messageSize) {
             NimBLEAddress addr = NimBLEAddress(mac);
 
             if (!doc["power"].isNull()) {
-                uint8_t power = ( doc["power"] == true ? 0x23 : 0x24 );
                 digitalWrite(LED, !digitalRead(LED));
                 Serial.println("Setting power");
+                uint8_t power = ( doc["power"] == true ? 0x23 : 0x24 );
                 uint8_t payload[] = {0xCC, power, 0x33};
                 if (do_write(addr, payload, sizeof(payload))) {
                     Serial.println("Successfully set power");
-                    sendMqttMessage("{\"state\":true, \"message\":\"Power set on device\"}");
+                    sendMqttMessage(F("{\"state\":true, \"message\":\"Power set on device\"}"));
                 } else {
                     Serial.println("Power set failed");
-                    sendMqttMessage("{\"state\":false, \"message\":\"Failed to set power on device\"}");
+                    sendMqttMessage(F("{\"state\":false, \"message\":\"Failed to set power on device\"}"));
                 }
-                return;
-            }
+                //return;
+            };
 
             if (doc["rgb"]) {
+                digitalWrite(LED, !digitalRead(LED));
                 uint8_t payload[7] = {0x56, 00, 00, 00, 00, 0xF0, 0xAA};
                 uint8_t percentage;
                 if (doc["percentage"] == nullptr) {
@@ -250,20 +277,23 @@ void mqttCallback(int messageSize) {
                 } else {
                     percentage = doc["percentage"];
                 }
+                // TODO the lights only scale in chunks of 15, so make this do that
                 float scale_factor = percentage / 100.0;
                 payload[1] = (int) doc["rgb"][0] * scale_factor;
                 payload[2] = (int) doc["rgb"][1] * scale_factor;
                 payload[3] = (int) doc["rgb"][2] * scale_factor;
                 if (do_write(addr, payload, sizeof(payload))) {
                     Serial.println("Set RGB worked");
+                    sendMqttMessage(F("{\"state\":true, \"message\":\"RGB set on device\"}"));
                 } else {
                     Serial.println("Set RGB failed");
-                };
-                digitalWrite(LED, !digitalRead(LED));
-                return;
-            }
+                    sendMqttMessage(F("{\"state\":false, \"message\":\"RGB set failed\"}"));
+                }
+                //return;
+            };
 
             if (doc["mode"]) {
+                digitalWrite(LED, !digitalRead(LED));
                 // # 37 : 0x25: Seven color cross fade
                 // # 38 : 0x26: Red gradual change
                 // # 39 : 0x27: Green gradual change
@@ -284,32 +314,34 @@ void mqttCallback(int messageSize) {
                 // # 54 : 0x36: Purple strobe flash
                 // # 55 : 0x37: White strobe flash
                 // # 56 : 0x38: Seven color jumping change
-                // # 65 : 0x41: Looks like this might be solid colour?
+                // # 65 : 0x41: Looks like this might be solid colour as set by remote control
+                // # 97 : 0x61: RGB fade
+                // # 98 : 0x62: RGB cycle
                 //
-                // Speed : 1 = fast --> 255 = slow
-                uint8_t mode = doc["mode"];
-                uint8_t speed;
-                if (doc["speed"].isNull()) {
-                    speed = 127;
-                } else {
-                    speed = doc["speed"];
-                };
-                if ((mode >= 0x25) && (mode <= 0x38)) {
+                // Speed : 1 = fast --> 31 = slow
+                uint8_t mode  = doc["mode"];
+                uint8_t speed = doc["speed"];
+                if ( (speed<1) || (speed>31) || (doc["speed"].isNull()) ){
+                    speed = 15;
+                }
+                if ( ((mode >= 0x25) && (mode <= 0x38)) || ( (mode >= 0x61) && (mode <= 0x62) ) ) {
                     uint8_t payload[4] = {0xBB, 0x27, 0x7F, 0x44};
                     payload[1] = mode;
                     payload[2] = speed;
                     if (do_write(addr, payload, sizeof(payload))) {
-                        Serial.println("Did set mode");
+                        Serial.println("Set mode and speed correct");
+                        sendMqttMessage(F("{\"state\":true, \"message\":\"mode set on device\"}"));
                     } else {
                         Serial.println("Set mode failed");
+                        sendMqttMessage(F("{\"state\":false, \"message\":\"mode set failed\"}"));
                     }
-                    digitalWrite(LED, !digitalRead(LED));
                 };
-                return;
+            //return;
             };            
         };
     };
-}
+};
+
 
 
 bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
@@ -344,7 +376,10 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
         }
         pClient = NimBLEDevice::createClient();
         Serial.println("Created new client");
-         pClient->setConnectionParams(7,7,0,200); // As a test setting this here to see if we can connect 1st time more often
+        pClient->setConnectionParams(7,7,0,200); // As a test setting this here to see if we can connect 1st time more often.
+        //  Testing shows that this does seem to allow initial connections and reconnections more readily. Even though the tolerances are much lower
+        //  it does seem to work.  It will retry at RSSI -90, but will connect usually within the first 5 tries.
+
         pClient->setClientCallbacks(&clientCB, false);
         pClient->setConnectTimeout(5);
 
@@ -365,11 +400,12 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
 
     if(!pClient->isConnected()) {
         int i = 0;
-        while ( (i <= 5) && (!pClient->isConnected()) ) {
+        while ( (i <= 10) && (!pClient->isConnected()) ) {
             if (!pClient->connect(bleAddr, false)) {
                 Serial.print("Failed to connect in retry loop: ");
                 Serial.println(i);
                 sendMqttMessage("{\"state\":\"pending\", \"message\":\"Connect failed. Retrying...\"}");
+                digitalWrite(LED, !digitalRead(LED));
                 delay(1000);
                 i++;
             }
@@ -402,7 +438,6 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
         nChr = nSvc->getCharacteristic(NOTIFY_CHAR);
         if (nChr->canNotify()) {
             nChr->subscribe(true, &notifyCB);
-            //nChr->subscribe(true, notifyCB);
         };
     } else {
         Serial.println("Failed to get nsvc");
@@ -431,7 +466,7 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
 
 bool findTrionesDevices(){
     digitalWrite(LED, !digitalRead(LED));
-    NimBLEScan* pBLEScan =NimBLEDevice::getScan();
+    NimBLEScan* pBLEScan = NimBLEDevice::getScan();
     if (!pBLEScan) {
         return false;
     }
@@ -443,10 +478,7 @@ bool findTrionesDevices(){
     Serial.println("Doing scan for 30 seconds... this blocks");
     pBLEScan->start(30,false);//, nullptr, false);
     pBLEScan->stop();
-    delay(500); // Give time for the callbacks to finish up before this all goes out of scope
-    //pBLEScan->start(30,false);//, nullptr, false);
-    //pBLEScan->stop();
-    //delay(500);
+    //delay(500); // Give time for the callbacks to finish up before this all goes out of scope?
     Serial.println("Done scanning");
     sendMqttMessage("{\"state\":true,\"status\":\"Scan complete\"}");
     return true;
@@ -465,17 +497,21 @@ void setup (){
     // Set up Wifi
     Serial.println("Setting up Wifi...");
     WiFi.mode(WIFI_STA);
-    WiFi.hostname(HOSTNAME);
     WiFi.begin(STASSID, STAPSK);
     while (WiFi.waitForConnectResult() != WL_CONNECTED) {
         Serial.println("Couldn't connect to Wifi! Rebooting...");
         delay(5000);
         ESP.restart();
     }
+    ipAddr = WiFi.localIP();
+    uint8_t oct = ipAddr[3];
+    std::string hostname = HOSTNAME;
+    hostname += std::to_string(oct);;
+    WiFi.hostname(hostname.c_str());
     Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
+    Serial.println(ipAddr);
     Serial.print("Hostname: ");
-    Serial.println(HOSTNAME);
+    Serial.println(hostname.c_str());
 
     //Set up OTA
     //  After all the effort I went to in order to enable OTA, it seems that OTA is quite chatty on the wifi
@@ -485,15 +521,37 @@ void setup (){
     //ArduinoOTA.begin();
 
     // Setup MQTT
+    // Schema looks like this:
+    //   triones/control/<myIpAddr> - control devices on this ESP32.  JSON payload with instructions.
+    //   triones/control/global     - send message to all ESP32s
+    //   triones/stats/<myIpAddr>   - Status messages as JSON
+
     if (mqttClient.connect(broker, port)) {
-        mqttClient.subscribe(MQTT_SUB_TOPIC);
+        mqttControlTopic = "triones/control/";
+        mqttGlobalTopic = mqttControlTopic;
+        mqttControlTopic += ipAddr.toString().c_str();        
+        mqttGlobalTopic += "global";
+        mqttPubTopic = "triones/status/";
+        mqttPubTopic += ipAddr.toString().c_str();
+        Serial.print("Control topic: ");
+        Serial.println(mqttControlTopic.c_str());
+        Serial.print("Global topic: ");
+        Serial.println(mqttGlobalTopic.c_str());
+        //const char * ct = mqttControlTopic.c_str();
+        //const char * gt = mqttGlobalTopic.c_str();
+        mqttClient.subscribe(mqttControlTopic.c_str());
+        //mqttClient.subscribe(ct);
+        mqttClient.subscribe(mqttGlobalTopic.c_str());
         mqttClient.onMessage(mqttCallback);
+        
     } else {
         Serial.println("MQTT connection failed!");
     }
     pinMode(LED, OUTPUT);
     digitalWrite(LED, !digitalRead(LED));
     sendMqttMessage("BLE Relay Ready"); // TODO:  Replace this with a proper JSON message including the IP address
+    sendMqttMessage(WiFi.localIP().toString().c_str());
+    Serial.println("READY");
 }
 
 
@@ -502,9 +560,9 @@ void loop (){
     //ArduinoOTA.handle();
 
     // Flash the light, of course
-    // unsigned long currentMillis = millis();
-    // if (currentMillis - previousMillis >= 1000) {
-    //     previousMillis = millis();
-    //     digitalWrite(LED, !digitalRead(LED));
-    // }
+    unsigned long currentMillis = millis();
+    if (currentMillis - previousMillis >= 2500) {
+        previousMillis = millis();
+        digitalWrite(LED, !digitalRead(LED));
+    }
 }
