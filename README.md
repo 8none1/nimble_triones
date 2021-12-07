@@ -1,5 +1,7 @@
 # nimble_triones
-Control Triones lights from an ESP32 using the Nimble BTLE stack
+Control Triones lights from an ESP32 using the Nimble BTLE stack and MQTT.
+
+[image](https://user-images.githubusercontent.com/6552931/126961723-b64c8e99-0da0-4924-b254-b4c116330f11.png)
 
 
 # The story so far....

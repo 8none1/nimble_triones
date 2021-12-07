@@ -4,6 +4,7 @@ export M="78:82:04:00:02:16"
 export ST="78:82:a4:00:05:1e"
 export SA="b8:82:a4:00:24:43"
 export TD="192.168.42.60"
+export D2="192.168.42.26"
 export P1="mosquitto_pub -h smarthome -t "
 
 
@@ -60,12 +61,7 @@ status_test_study ()
 
 status_test_sam () 
 { 
-    $P1"triones/control/" -m "{\"action\":\"status\", \"mac\":\"$SA\"}"
-}
-
-status_test_sam_directed () 
-{ 
-    $P1"triones/control/" -m "{\"action\":\"status\", \"mac\":\"$SA\", \"targetDevice\":\"192.168.42.26\"}"
+    $P1"triones/control/$D2" -m "{\"action\":\"status\", \"mac\":\"$SA\"}"
 }
 
 ble_ping ()
