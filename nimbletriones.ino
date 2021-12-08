@@ -30,18 +30,12 @@ IPAddress ipAddr;
 // and a single array of 5 structs for the devices.
 // This is all new to me, if you can improve it please send a PR and teach me.
 const uint8_t maxDevices = 5;
-// struct TrionesDevice {
-//     std::string macAddr;
-//     int rssi;
-// }
 typedef struct {
     std::string macAddr;
     int rssi;
-//    std::string location;
 } TrionesDevice;
 
 TrionesDevice localDevices[maxDevices];
-//uint8_t deviceCount = 0;
 
 //NimBLE Stuff
 const NimBLEUUID NOTIFY_SERVICE ("FFD0");
@@ -167,7 +161,6 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
                 doc["rssi"] = advertisedDevice->getRSSI();
                 doc["scanningDevice"] = WiFi.localIP().toString();
 
-                //if (deviceCount >= maxDevices) deviceCount = 0; //wrap around
                 TrionesDevice discoveredDevice;
 
                 discoveredDevice.macAddr = doc["mac"].as<std::string>();
@@ -183,51 +176,14 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
                         if (discoveredDevice.rssi > realRssi) {
                             // We are better
                             localDevices[i].rssi = discoveredDevice.rssi;
-                            Serial.println("Updated table with a better rssi from a local scan");
+                            Serial.print("Updated existing device with better rssi from scan: ");
+                            Serial.println(discoveredDevice.macAddr.c_str());
                             std::string scanTopic = mqttPubTopic;
                             scanTopic += "/scan";
                             sendMqttMessage(doc,scanTopic);
                             // The rssi for this device is now minus whatever, meaning we have the best connection
                             // done with this device now;
                         };
-                        // } else {
-                        //     // The other end has the better connection
-                        //     // do nothing.
-                        // };
-
-                        // if (rssi > 0) {
-                        //     // > 0 means that this device is on a remote ESP32, not us
-                        //     // Do we have a better signal though?
-                        //     int realRssi = -rssi;
-                        //     if (discoveredDevice.rssi > realRssi) {
-                        //         // We are better
-                        //         localDevices[i].rssi = discoveredDevice.rssi;
-                        //         Serial.println("Updated table with a better rssi from a local scan");
-                        //         std::string scanTopic = mqttPubTopic;
-                        //         scanTopic += "/scan";
-                        //         sendMqttMessage(doc,scanTopic);
-                        //         // The rssi for this device is now minus whatever, meaning we have the best connection
-                        //         // done with this device now;
-                        //     } else {
-                        //         // The other end has the better connection
-                        //         // do nothing.
-                        //     };
-                        // } else {
-                        //     // rssi is < 0, which means that this device is known by us already
-                        //     // we only keep the best rssi that we see during a scan
-                        //     if (discoveredDevice.rssi > rssi) {
-                        //         // This scan result has better rssi that the previous one, so update the table
-                        //         localDevices[i].rssi = discoveredDevice.rssi;
-                        //         Serial.println("Updated table with a better rssi from a local scan 2");
-                        //         std::string scanTopic = mqttPubTopic;
-                        //         scanTopic += "/scan";
-                        //         sendMqttMessage(doc,scanTopic);
-                        //     } else {
-                        //         // The existing entry has better rssi, leave it as it is.
-                        //         // do nothing
-                        //     };
-                        // };
-                        // We found an existing device, either updated it or didnt, but we're done.
                         return;
                     }
                 };
@@ -238,7 +194,8 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
                     if (mac == "FISH") {
                         // spare slot, let's write in here
                         localDevices[i] = discoveredDevice;
-                        Serial.println("Added new device to table");
+                        Serial.print("Added new device: ");
+                        Serial.println(discoveredDevice.macAddr.c_str());
                         std::string scanTopic = mqttPubTopic;
                         scanTopic += "/scan";
                         sendMqttMessage(doc,scanTopic);
@@ -262,8 +219,8 @@ void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData,
             const uint8_t green = pData[7]; // G
             const uint8_t blue  = pData[8]; // B
             const std::string addr = pRemoteCharacteristic->getRemoteService()->getClient()->getPeerAddress().toString();
-            char buffer[95];
-            sprintf(buffer, "{\"mac\":\"%s\", \"power\":%s, \"rgb\":[%u,%u,%u], \"speed\", %u, \"mode\":%u}", addr.c_str(), power_state, red, green, blue, speed, mode);
+            char buffer[120];
+            sprintf(buffer, "{\"type\":\"status report\",\"mac\":\"%s\", \"power\":%s, \"rgb\":[%u,%u,%u], \"speed\": %u, \"mode\":%u}", addr.c_str(), power_state, red, green, blue, speed, mode);
             sendMqttMessage(buffer);
             digitalWrite(LED, !digitalRead(LED));
         }
@@ -277,27 +234,7 @@ void mqttCallback(int messageSize) {
     //Serial.println(mt.c_str());
     std::string scanTopic = mqttPubTopic;
     scanTopic += "/scan";
-    // Schema looks like this:
-    //   triones/control/<myIpAddr> - control devices on this ESP32.  JSON payload with instructions.
-    //   triones/control/global     - send message to all ESP32s
-    //   triones/stats/<myIpAddr>   - Status messages as JSON
-    //
-    // Payload looks like:
-    /* {
-        // Needed for every message
-        "action" : "ping" | "scan" | "set" ,
-
-        // Needed for most messages
-        "mac" : "aa:bb:cc:dd:ee:ff" (a mac address as a string),
-
-        // action specific
-        "disconnect" - (needs a mac),
-
-    */
-
     if ( (mt != mqttControlTopic) && (mt != mqttGlobalTopic) && (mt != scanTopic) ) {
-        // TODO: this should probably just return.  It happens too often really.
-        //Serial.println("NAMFM");
         return;
     }
 
@@ -317,21 +254,13 @@ void mqttCallback(int messageSize) {
             //Serial.println("Received scan result, but it was one that I sent");
             return;
         } else {
-            // Should be from elsewhere
-            // A scan results has come in from another device.  Do we know about the same device?
-            // If so, how does our RSSI compare?  If the other ESP32 has a better connection then
-            // bodge our mac to some invalid thing.  Hmm, this is going to be super racy. 
-            // Meh, it'll probably work most of the time.  Remember, devices which are paired do
-            // not show up in scans.  What the worst that could happen?
             std::string remoteMac = doc["mac"];
             int8_t remoteRssi = doc["rssi"];
-            Serial.print("Dealing with scan results from another esp32:\n");
-            Serial.print("MAC: ");
+            Serial.print("Device announced by remote ESP32: ");
             Serial.println(remoteMac.c_str());
             Serial.print("RSSI: ");
             Serial.println(remoteRssi);
 
-            // iterate our list of devices to see who is the best
             for (int i=0; i < maxDevices; i++) {
                 TrionesDevice localDevice = localDevices[i];
                 std::string localMac = localDevice.macAddr;
@@ -343,7 +272,7 @@ void mqttCallback(int messageSize) {
                         // We indicate remote by inverting the rssi so it's above zero
                         Serial.println("Other end is better");
                         localDevice.macAddr = -remoteRssi;
-                        return;  // Don't need to keep iterating the array I think;
+                        return;
                     } else {
                         // mac matches but new remote rssi is worse
                         // so leave everything as is.
@@ -377,7 +306,7 @@ void mqttCallback(int messageSize) {
     };
 
     // Deal with global requests
-    if (mt == mqttGlobalTopic) {
+    if (mt == mqttGlobalTopic){
         if (action == "ping") {
             StaticJsonDocument<64> ping_doc;
             ping_doc["ipAddr"] = ipAddr.toString();
@@ -389,37 +318,42 @@ void mqttCallback(int messageSize) {
             findTrionesDevices();
             digitalWrite(LED, !digitalRead(LED));
             return;
-        } else if (action == "set") {
+        } else if ( (action == "set") || (action == "status") ) {
             // Global set action called, can we service this request?
-            Serial.println("Global set called, checking if we can help");
+            Serial.print("Global set or status called, checking if we can help with device: ");
             std::string requestMac = doc["mac"].as<std::string>();
+            Serial.println(requestMac.c_str());
             bool match = false;
             for (int i=0; i<maxDevices; i++) {
                 TrionesDevice device = localDevices[i];
                 std::string ourMac = device.macAddr;
+                //Serial.print("Checking: ");
+                //Serial.printls(ourMac.c_str());
                 if (ourMac == requestMac) {
                     // We found a match. Do we have a negative rssi?  If so, then we can help
+                    //Serial.println("Match MAC");
                     if (device.rssi < 0) {
+                        //Serial.println("rssi is negative");
+                        Serial.println("MAC match found, I'll help");
                         match = true;
                         break;
                     };
                 };
+            };
             if (!match) {
                 Serial.println("No matching device locally, can't help");
                 return;
             }
             // If we get here we should have a device in our list so we can pass this request on as if it was intended for us
-            // in the first place.  Do that by bodging the topic
-            mt == mqttControlTopic;
+            // in the first place.  Do that by bodging the topic:
+            mt = mqttControlTopic;
             // :chef_kiss:
-            }
-        } else {
-            Serial.println("Fell through to the end of the global topic options");
-            return;
-        }
-       //return;
-    };
-
+        };
+    } else {
+        Serial.println("Fell through to the end of the global topic options");
+        return;
+    }
+    //return;
 
     // Deal with my requests
     if (mt == mqttControlTopic) {
@@ -603,18 +537,13 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
         }
     }
 
-    // I think we can wrap this in a retry.  Ways of getting here are:
-    // - There isn't an existing connection so we created a new one
-    // - There is an existing one, but we didn't connect
-    // Assume that if there is an existing client, it should just work
-
     if(!pClient->isConnected()) {
         int i = 0;
         while ( (i <= 10) && (!pClient->isConnected()) ) {
             if (!pClient->connect(bleAddr, false)) {
                 Serial.print("Failed to connect in retry loop: ");
                 Serial.println(i);
-                sendMqttMessage("{\"state\":\"pending\", \"message\":\"Connect failed. Retrying...\"}");
+                //sendMqttMessage("{\"state\":\"pending\", \"message\":\"Connect failed. Retrying...\"}");
                 digitalWrite(LED, !digitalRead(LED));
                 delay(1000);
                 i++;
@@ -623,7 +552,6 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
         if (!pClient->isConnected()){
             Serial.println("Retrying failed.  Sorry");
             sendMqttMessage("{\"state\":false, \"message\":\"Connect retry failed to connect\"}");
-            // Throw away the non-working client.  This must exist for us to have got this far...
             NimBLEDevice::deleteClient(pClient);
             return false;
         }
@@ -684,17 +612,15 @@ bool findTrionesDevices(){
         return false;
     }
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks(), false);
-    // We're ready to scan, but first let's clear our local array of devices and old scan results
     pBLEScan->clearDuplicateCache();
     pBLEScan->clearResults();
     for (int i=0; i < maxDevices; i++) {
-        localDevices[i].macAddr = "FISH";
+        localDevices[i].macAddr = "FISH"; // Could be FISH, could be \0, could be "undefined".  I like FISH.
     };
-    //deviceCount = 0;
-    int s = random(10)*1000;
+    int s = random(5)*1000;
     Serial.print("Delay: ");
     Serial.println(s);
-    delay(s);  // If a global scan happens, try not to all start at the same time.  Help to avoid the race?
+    delay(s);
     Serial.println("Doing scan for 30 seconds");
     pBLEScan->start(30, *onScanComplete, false);
     return true;
@@ -708,7 +634,7 @@ void setup (){
     NimBLEDevice::setScanDuplicateCacheSize(10);
     NimBLEDevice::init("");
     NimBLEDevice::setPower(ESP_PWR_LVL_P9); /** +9db */
-    NimBLEDevice::setMTU(23);  // This is what the lights ask for, so set up front. This made it much more reliable to connect first time.
+    NimBLEDevice::setMTU(23);  // This is what the lights ask for, so set up front. I think this made it more reliable to connect first time.
     
     // Set up Wifi
     Serial.println("Setting up Wifi...");
@@ -737,11 +663,6 @@ void setup (){
     //ArduinoOTA.begin();
 
     // Setup MQTT
-    // Schema looks like this:
-    //   triones/control/<myIpAddr> - control devices on this ESP32.  JSON payload with instructions.
-    //   triones/control/global     - send message to all ESP32s
-    //   triones/stats/<myIpAddr>   - Status messages as JSON
-
     if (mqttClient.connect(broker, port)) {
         mqttControlTopic = "triones/control/";
         mqttGlobalTopic = mqttControlTopic;
@@ -767,9 +688,17 @@ void setup (){
     }
     pinMode(LED, OUTPUT);
     digitalWrite(LED, !digitalRead(LED));
-    sendMqttMessage("BLE Relay Ready"); // TODO:  Replace this with a proper JSON message including the IP address
-    sendMqttMessage(WiFi.localIP().toString().c_str());
+     StaticJsonDocument<100> temp_doc;
+    temp_doc["ipAddr"] = WiFi.localIP().toString();
+    temp_doc["status"] = "Ready";
+    temp_doc["state"] = true;
+    temp_doc["hostname"] = hostname;
+    sendMqttMessage(temp_doc);
+
     Serial.println("READY");
+    
+    // When a device comes online it asks everyone to do a scan
+    sendMqttMessage("{\"action\":\"scan\"}", "triones/control/global");
 }
 
 

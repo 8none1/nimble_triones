@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# `source` this file to use it
+
 export M="78:82:04:00:02:16"
 export ST="78:82:a4:00:05:1e"
 export SA="b8:82:a4:00:24:43"
@@ -77,4 +79,14 @@ compound_test ()
 mode ()
 {
     $P1"triones/control/$TD" -m "{\"mac\":\"$ST\", \"mode\":$1, \"action\":\"set\"}"
+}
+
+global_test ()
+{
+    $P1"triones/control/global" -m "{\"mac\":\"$ST\", \"action\":\"status\"}"
+}
+
+global_set_test ()
+{
+    $P1"triones/control/global" -m "{\"mac\":\"$ST\", \"action\":\"set\", \"rgb\":[255,0,0]}"
 }
