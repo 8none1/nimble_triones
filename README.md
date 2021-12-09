@@ -7,7 +7,23 @@ Control Triones based LED strips from an ESP32 using the Nimble BTLE stack and M
 ![image](https://user-images.githubusercontent.com/6552931/126961723-b64c8e99-0da0-4924-b254-b4c116330f11.png)
 
 
-# The story so far....
+# Quick start in six steps
+1. Read the prerequisites and flash this sketch to your ESP32
+2. Wait a minute while the ESP32 scans for your device
+3. Send a JSON payload via MQTT like this:
+
+```
+mosquitto_pub -h <mqtt ip> -t triones/control/global -m "{\"mac\":\"aa:bb:cc:dd:ee:ff\", \"power\":true}"
+mosquitto_pub -h <mqtt ip> -t triones/control/global -m "{\"mac\":\"aa:bb:cc:dd:ee:ff\", \"rgb\":[0,255,0]}"
+```
+
+4. The light should turn on and go green.
+5. Using the Triones remote, turn the device off and back on again.  You should see a JSON payload MQTT message published to `triones/status`.
+6. Done
+
+If you want to improve the coverage, simply add more ESP32s.  Flash them and switch them on, they'll work out what's going on between themselves and work co-operatively.  How very Sesame Street.
+
+# Long version.  Part 1.  The story so far...
 
 1) I'm a cheapskate
 2) I like controlling things with software
@@ -59,12 +75,19 @@ However - this works. Kinda.  OTA support is currently disabled, but it can be e
 
  #### How to structure your MQTT messages
 
- These devices look for JSON formatted MQTT topics to know, specific topics.  You can change these to be whatever you want of course, but the code is a bit of a mess so be warned.
+ These devices look for JSON formatted MQTT payloads sent to specific topics.  You can change these to be whatever you want of course, but the code is a bit of a mess so be warned.
 
- The topics are:
+ The default topics are:
   * `mqttControlTopic` - `triones/control/<device IP address>` as an unquoted string, e.g. `192.168.0.1` - send a control payload to one specific device
   * `mqttGlobalTopic` - `triones/control/global` - send a control payload to all devices in the network
   * `mqttPubTopic` - `triones/status` - devices in the network reporting their state and status
+
+
+When you power up the ESP32 it will connect to your WiFi, get an IP address and then connect to your MQTT server.  If that all goes to plan it will send a "do a scan" message to the `mqttGlobalTopic`.  Every Nimble Triones ESP32 in your network, including the one that issued the message, will receive the command to scan for BT LE devices which have a name beginning with "Triones".
+The ESP32s will scan for 30 seconds reporting each device they find to MQTT and every other ESP32 will listen to that message.
+If the receiving ESP32 can also see the same MAC address it will decide if the RSSI it has is better than the RSSI the other device has.  If it is, then the device will be added to the local device table with a negative RSSI, meaning "I am in charge of talking to this device".  In theory this means that there is only one "best" RSSI in the network and messages for that LED MAC address will only be serviced by one ESP32.  In practice this is likely to be quite racey.  The potential saviour here is that once a Triones device is paired it won't be discoverable via a scan any more.  The reality is that I doubt anyone cares enough for this to be a real problem.
+
+The global topic is subscribed to by each ESP32.  If you want to send a message to a specific ESP32 use the `mqttControlTopic` which by default is `triones/control/<IP Address of the ESP32>`.
 
 #### Control Payloads
 
@@ -85,7 +108,7 @@ However - this works. Kinda.  OTA support is currently disabled, but it can be e
  * `mode` - value between 37 and 56. See the code for what each mode does. e.g. `{"action":"set", "mac":"aa:bb:cc:dd:ee:ff", "mode":41}`
   * `mode` also supports the optional `speed` key.  Speed is between 1 (fast) and 31 (slow) e.g. `{"action":"set", "mac":"aa:bb:cc:dd:ee:ff", "mode":41, "speed": 4}`
 
-You can include more than one control type in your JSON payload, so for example, if you wanted to power on and set the colour to blue you could:
+You can include more than one control type in your JSON payload, so for example, if you wanted to power on and set the colour to blue you could set the payload to:
 
 ```
 { 
@@ -94,6 +117,14 @@ You can include more than one control type in your JSON payload, so for example,
   "rgb" : [255,0,0],
   "power":true
 }
+```
+
+and send a message to topic `triones/control/global`.
+
+For example:
+
+```
+$ mosquitto_pub -t triones/control/global -m "{\"mac\":\"aa:bb:cc:dd:ee:ff\",\"action\":\"set\",\"rgb\" : [255,0,0],\"power\":true}"
 ```
 
 The ESP will take care of connecting, or retrying 10 times before giving up.  It will then stay connected for as long as it can.  This makes subsequent commands almost instantaneous and will generate "power on" message when you switch the LEDs on with the remote.  N.B: only power on messages are generated when using the remote, that seems to be just how it works.  If you want more accurate information about what the lights are doing, just send a status message.  I used Node Red to send a status request every 10 minutes.
@@ -113,20 +144,19 @@ In the meantime, it needs some tidy up but it's ready for testing and replacing 
 
 # Problems that still exist
  - The biggest problem seems to be range.  At an RSSI of -80 or worse (so lower numbers) things get a bit hit and miss.  I've also had an ESP32 about 1M from a Triones device and report RSSI of -75, so yeah.  Crappy.
- - The Bluetooth lights lock up some times.  It seems the only thing you can do to fix it is power cycle them
-   - I think I might have a bit of a better understanding about what's happening here now.  If you ask the device for the status, and then fail to read that status and leave it kind of hanging around, then the device starts sending back malformed packets. If you leave enough of these queued up, Bluetooth stops responding on the device.  Read your notifications!
-   - Edit: Maybe not.  I think this might be more down to the performance of the BT antenna on the ESP32 and wifi co-existence.
-
- - If you enable OTA then you suddenly can't connect to BLE devices (yes, the whole point of this endeavour was to enable OTA).  Edit: this might not be true.  I have had it working, but have given up for now because the Arduino IDE kept asking for a password to flash, and I hadn't set one.  Haven't bothered to debug this.
- - If you enable mDNS you can't connect to BLE devices.  Edit: this might not be true.  I should renable it at some point.
  
- It's starting to look like I would need one ESP32 within about 6 feet of the lights in order to make them work reliably.  This increases the cost of one set of 5M LED lights to about £13 (£7 for the lights, £5 for the ESP32).  e.g "CNSUNWAY" 5M LED strip https://amzn.to/3lwSw8e  (affiliate link)
+ - If you enable OTA then you suddenly can't connect to BLE devices (yes, the whole point of this endeavour was to enable OTA).  Edit: this might not be true.  I have had it working, but have given up for now because the Arduino IDE kept asking for a password to flash, and I hadn't set one.  Haven't bothered to debug this.  A suggestion on the NimBLE issues page was to enable NimBLE before you enable OTA in the `setup()` function.  Worth a try.
+
+ - If you enable mDNS you can't connect to BLE devices.  Edit: this might not be true.  I should renable it at some point and test.
+ 
+ # Future of this project
+ In two words, not much.  I'm about done with the functionality I need. I do believe that this is the most reliable Triones controller on Github, despite my crappy code. This is in part to my hacks to make it work (connection params for example), and my extensive if..else spaghetti which should catch the many ways in which this device can fail to respond correctly.  However, once I put an ESP32 upstairs to control the kid's lights, and it fails to work more than a few times, I will give up.  These Triones lights are fine for using with the IR remote, but their BT LE implementation seems broken.  See below for more on that.
+ Anyway, if you want to try and fix something, send me a PR and I'll be happy to merge it.  The general theory is that I wanted to avoid too much esoteric C++ because I want to still be able to understand what it's doing, so bear that in mind.  
+
+ # Final words
+ Because of the poor range, it's starting to look like I would need one ESP32 within about 6 feet of each lights in order to make them work reliably.  This increases the cost of one set of 5M LED lights to about £13 (£7 for the lights, £5 for the ESP32).  e.g ["CNSUNWAY" 5M LED strip](https://amzn.to/3lwSw8e)  (affiliate link)
 
  vs the cheapest Wifi controlled lights I can find on Amazon for £15:  https://amzn.to/32XYTLv  (affiliate link)
 
  If I hadn't already bought a load of the Bluetooth ones, I would spend my money on the Wifi connected ones instead.  I haven't checked, but I would guess that the wifi ones are using the Tuya platform.  Tuya have documented their API and you can (currently) get an API key for free.  There are lots of projects out there to help you.  Save yourself a lot of time and bother.
- Update:  I've some some mild success at ranges of about 4M indoors.  That's probably good enough to cover a few bedrooms, so might not be so bad after all.
-
-
-
-
+ 
