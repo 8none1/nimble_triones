@@ -29,13 +29,13 @@ IPAddress ipAddr;
 // (one for mac, one for rssi) and so on.  In the end I've settled on a struct for the mac and rssi
 // and a single array of 5 structs for the devices.
 // This is all new to me, if you can improve it please send a PR and teach me.
-const uint8_t maxDevices = 5;
+const uint8_t MAXDEVICES = 5;
 typedef struct {
     std::string macAddr;
     int rssi;
 } TrionesDevice;
 
-TrionesDevice localDevices[maxDevices];
+TrionesDevice localDevices[MAXDEVICES];
 
 //NimBLE Stuff
 const NimBLEUUID NOTIFY_SERVICE ("FFD0");
@@ -133,15 +133,23 @@ static ClientCallbacks clientCB;
 
 void onScanComplete(NimBLEScanResults results) {
     Serial.println("Done scanning");
-    char buffer[80];
-    sprintf(buffer, "{\"state\":true,\"message\":\"Scan complete\",\"scanningHost\":\"%s\"}", ipAddr.toString().c_str());
-    sendMqttMessage(buffer);
+    StaticJsonDocument<384> tableDoc; // This feels like it's very big was 512
+    tableDoc["scanningHost"] = ipAddr.toString();
+    tableDoc["type"] = "scanTable";
+    JsonArray devices = tableDoc.createNestedArray("devices");
     Serial.println("Here's what's in the table:");
-    for (int i=0; i < maxDevices; i++) {
-        Serial.println(i);
-        Serial.println(localDevices[i].macAddr.c_str());
-        Serial.println(localDevices[i].rssi);
+    for (int i=0; i < MAXDEVICES; i++) {
+        std::string mac = localDevices[i].macAddr.c_str();
+        if (mac != "FISH") {
+            Serial.println(i);
+            Serial.println(mac.c_str());
+            Serial.println(localDevices[i].rssi);
+            JsonObject device = devices.createNestedObject();
+            device["mac"]  = localDevices[i].macAddr;
+            device["rssi"] = localDevices[i].rssi;
+        }
     };
+    sendMqttMessage(tableDoc, mqttPubTopic); // the mqtt client has a payload limit of 256 bytes, if you're running more than 5 Triones devices this will be a problem.
 };
 
 class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
@@ -165,7 +173,7 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
 
                 discoveredDevice.macAddr = doc["mac"].as<std::string>();
                 discoveredDevice.rssi = doc["rssi"];
-                for (int i=0; i < maxDevices; i++) {
+                for (int i=0; i < MAXDEVICES; i++) {
                     std::string mac = localDevices[i].macAddr;
                     int rssi = localDevices[i].rssi;
                     if (discoveredDevice.macAddr == mac) {
@@ -189,7 +197,7 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
                 };
 
                 // If we are here, then we didnt have an existing entry for this mac, so find a slot for it in the table, and add it.
-                for (int i=0; i < maxDevices; i++) {
+                for (int i=0; i < MAXDEVICES; i++) {
                     std::string mac = localDevices[i].macAddr;
                     if (mac == "FISH") {
                         // spare slot, let's write in here
@@ -238,6 +246,7 @@ void mqttCallback(int messageSize) {
         return;
     }
 
+
     StaticJsonDocument<200> doc;  // Shrink this later? 200 seems OK though.  100 caused stack overflows
     DeserializationError err = deserializeJson(doc, mqttClient);
 
@@ -261,7 +270,7 @@ void mqttCallback(int messageSize) {
             Serial.print("RSSI: ");
             Serial.println(remoteRssi);
 
-            for (int i=0; i < maxDevices; i++) {
+            for (int i=0; i < MAXDEVICES; i++) {
                 TrionesDevice localDevice = localDevices[i];
                 std::string localMac = localDevice.macAddr;
                 if (localMac == remoteMac) {
@@ -281,7 +290,7 @@ void mqttCallback(int messageSize) {
                 };
             };
             // If we got here, then we ran through the table without finding a match, so we need to add this device as new
-            for (int i=0; i < maxDevices; i++) {
+            for (int i=0; i < MAXDEVICES; i++) {
                 std::string m = localDevices[i].macAddr;
                 if (m == "FISH") {
                     TrionesDevice device;
@@ -324,16 +333,11 @@ void mqttCallback(int messageSize) {
             std::string requestMac = doc["mac"].as<std::string>();
             Serial.println(requestMac.c_str());
             bool match = false;
-            for (int i=0; i<maxDevices; i++) {
+            for (int i=0; i<MAXDEVICES; i++) {
                 TrionesDevice device = localDevices[i];
                 std::string ourMac = device.macAddr;
-                //Serial.print("Checking: ");
-                //Serial.printls(ourMac.c_str());
                 if (ourMac == requestMac) {
-                    // We found a match. Do we have a negative rssi?  If so, then we can help
-                    //Serial.println("Match MAC");
                     if (device.rssi < 0) {
-                        //Serial.println("rssi is negative");
                         Serial.println("MAC match found, I'll help");
                         match = true;
                         break;
@@ -353,9 +357,7 @@ void mqttCallback(int messageSize) {
         Serial.println("Fell through to the end of the global topic options");
         return;
     }
-    //return;
 
-    // Deal with my requests
     if (mt == mqttControlTopic) {
         if (action == "disconnect") {
             const char* mac = doc["mac"];
@@ -499,7 +501,6 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
             if ( !pClient->isConnected()) {
                 if (!pClient->connect(bleAddr, false)) {
                     Serial.println("Tried to reconnect to known device, but failed");
-                    //return false;
                 } else {
                     Serial.println("Correctly reconnected to device");
                 }
@@ -528,12 +529,7 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
         pClient->setConnectTimeout(5);
 
         if (!pClient->connect(bleAddr, false)) {
-            // Created a new client to use, but it failed, so get rid of it
-            //NimBLEDevice::deleteClient(pClient);
-            Serial.println("Created a new client, but still failed to connect. Removed client");
-            // Not returning here, because I want to try and re-try below.
-            // When we get here we have a client, but we are not connected
-            //return false;
+            Serial.println("Created a new client, but still failed to connect. Will retry");
         }
     }
 
@@ -541,9 +537,8 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
         int i = 0;
         while ( (i <= 10) && (!pClient->isConnected()) ) {
             if (!pClient->connect(bleAddr, false)) {
-                Serial.print("Failed to connect in retry loop: ");
+                Serial.print("Failed to connect. In retry loop: ");
                 Serial.println(i);
-                //sendMqttMessage("{\"state\":\"pending\", \"message\":\"Connect failed. Retrying...\"}");
                 digitalWrite(LED, !digitalRead(LED));
                 delay(1000);
                 i++;
@@ -551,7 +546,12 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
         };
         if (!pClient->isConnected()){
             Serial.println("Retrying failed.  Sorry");
-            sendMqttMessage("{\"state\":false, \"message\":\"Connect retry failed to connect\"}");
+            StaticJsonDocument<128> temp_doc;
+            temp_doc["ipAddr"] = WiFi.localIP().toString();
+            temp_doc["status"] = "Connect failed";
+            temp_doc["state"] = false;
+            temp_doc["mac"] = bleAddr.toString();
+            sendMqttMessage(temp_doc);
             NimBLEDevice::deleteClient(pClient);
             return false;
         }
@@ -560,10 +560,7 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
     // If we get here, then we really should be connected by now
     Serial.print("Connected to device: ");
     Serial.println(pClient->getPeerAddress().toString().c_str());
-    // Serial.print("RSSI: ");
-    // Serial.println(pClient->getRssi());
 
-    // Do the actual work...
     NimBLERemoteService* pSvc = nullptr;
     NimBLERemoteCharacteristic* pChr = nullptr;
     NimBLERemoteService* nSvc = nullptr;
@@ -598,7 +595,6 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
     } else {
         Serial.println("Failed to write data.");
     }
-    //pClient->disconnect();
     return true;
 }
 
@@ -614,8 +610,19 @@ bool findTrionesDevices(){
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks(), false);
     pBLEScan->clearDuplicateCache();
     pBLEScan->clearResults();
-    for (int i=0; i < maxDevices; i++) {
-        localDevices[i].macAddr = "FISH"; // Could be FISH, could be \0, could be "undefined".  I like FISH.
+
+    for (int i=0; i < MAXDEVICES; i++) {
+        const char* mac = localDevices[i].macAddr.c_str();
+        NimBLEAddress addr = NimBLEAddress(mac);
+        NimBLEClient * pClient = nullptr;
+        pClient = NimBLEDevice::getClientByPeerAddress(addr);
+        if (pClient) {
+            if (pClient->isConnected()) {
+                Serial.println("Device is already connected here, not removing");
+            }
+        } else {
+            localDevices[i].macAddr = "FISH"; // Could be FISH, could be \0, could be "undefined".  I like FISH.
+        }
     };
     int s = random(5)*1000;
     Serial.print("Delay: ");
@@ -688,7 +695,7 @@ void setup (){
     }
     pinMode(LED, OUTPUT);
     digitalWrite(LED, !digitalRead(LED));
-     StaticJsonDocument<100> temp_doc;
+    StaticJsonDocument<100> temp_doc;
     temp_doc["ipAddr"] = WiFi.localIP().toString();
     temp_doc["status"] = "Ready";
     temp_doc["state"] = true;

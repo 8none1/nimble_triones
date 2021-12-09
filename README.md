@@ -34,13 +34,13 @@ However - this works. Kinda.  OTA support is currently disabled, but it can be e
 ### How to use this sketch
 
 #### Prerequisites 
- - Arduino IDE.  There are no doubt ways to work without using the Arduino IDE, but that's up to you to work out.
- - ESP32 board support in the Arduino IDE.  Easy enough, just google "esp32 board manager arduino".
- - NimBLE library.  It's in the library manager in the Arduino IDE, install it from there.
- - ArduinoJson library. Ditto.
- - ArduinoMqtt library.  Ditto.  Make sure you install the "official" library.  There are others, I just happened to use this one.
+ - **Arduino IDE**.  There are no doubt ways to work without using the Arduino IDE, but that's up to you to work out.
+ - **ESP32 board support** in the Arduino IDE.  Easy enough, just google "esp32 board manager arduino".
+ - **[NimBLE library](https://github.com/h2zero/NimBLE-Arduino)**.  It's in the library manager in the Arduino IDE, install it from there.
+ - **ArduinoJson** library. Ditto.
+ - **ArduinoMqtt** library.  Ditto.  Make sure you install the "official" library.  There are others, I just happened to use this one.
  - This sketch
- - An MQTT server
+ - **An MQTT server**.  I recommend Mosquitto. 
  - (Optional) Something like Node Red to help you glue MQTT messages and other external actions together
 
  1. Open this sketch in the Arduino IDE, install the board support package, install the libraries
@@ -62,18 +62,20 @@ However - this works. Kinda.  OTA support is currently disabled, but it can be e
  These devices look for JSON formatted MQTT topics to know, specific topics.  You can change these to be whatever you want of course, but the code is a bit of a mess so be warned.
 
  The topics are:
-  * mqttControlTopic - `triones/control/<device IP address as an unquoted string, e.g. 192.168.0.1>` - send a control payload to one specific device
-  * mqttGlobalTopic - `triones/control/global` - send a control payload to all devices in the network
-  * mqttPubTopic - `triones/status` - devices in the network reporting their state and status
+  * `mqttControlTopic` - `triones/control/<device IP address>` as an unquoted string, e.g. `192.168.0.1` - send a control payload to one specific device
+  * `mqttGlobalTopic` - `triones/control/global` - send a control payload to all devices in the network
+  * `mqttPubTopic` - `triones/status` - devices in the network reporting their state and status
 
-*Control Payloads*
+#### Control Payloads
+
 * `{"action":"scan"}` - ask the ESP32s to do a BT LE scan and report what they can see to the mqttPubTopic.  Other devices also listen to this topic to learn about other LED strips around the network.
  * `{"action":"ping", "mac":"aa:bb:cc:dd:ee:ff"}` - asks for a simple reply from the device to the mqttPubTopic topic.
  * `{"action":"disconnect", "mac":"aa:bb:cc:dd:ee:ff"}` - disconnect from this LED controller
  * `{"action":"status", "mac":"aa:bb:cc:dd:ee:ff"}` - Report the status of this device to the mqttPubTopic topic
  * `{"action":"set", "mac":"aa:bb:cc:dd:ee:ff", ..... }` - Send a command to change colour, mode, brightness, power, etc to this device.  See below for more information.
 
- *Set Control Payloads*
+ #### Set Control Payloads
+
  These actually turn your lights on and off.
   All `set` actions must have a mac address, and then one or many of the following:
 
@@ -95,8 +97,6 @@ You can include more than one control type in your JSON payload, so for example,
 ```
 
 The ESP will take care of connecting, or retrying 10 times before giving up.  It will then stay connected for as long as it can.  This makes subsequent commands almost instantaneous and will generate "power on" message when you switch the LEDs on with the remote.  N.B: only power on messages are generated when using the remote, that seems to be just how it works.  If you want more accurate information about what the lights are doing, just send a status message.  I used Node Red to send a status request every 10 minutes.
-
-
 
 
 Update:  I've spent a few evenings over the last week getting to grips with C++ and NimBLE.  I'm starting to really like NimBLE.  I understand some of the C++iness about it now.
