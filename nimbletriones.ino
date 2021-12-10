@@ -428,8 +428,11 @@ void mqttCallback(int messageSize) {
                 // TODO the lights only scale in chunks of 15, so make this do that
                 float scale_factor = percentage / 100.0;
                 payload[1] = (int) doc["rgb"][0] * scale_factor;
+                if (payload[1] > 255) payload[1] = 255;
                 payload[2] = (int) doc["rgb"][1] * scale_factor;
+                if (payload[2] > 255) payload[2] = 255;
                 payload[3] = (int) doc["rgb"][2] * scale_factor;
+                if (payload[3] > 255) payload[3] = 255;
                 if (do_write(addr, payload, sizeof(payload))) {
                     Serial.println("Set RGB worked");
                     sendMqttMessage(F("{\"state\":true, \"message\":\"RGB set on device\"}"));
