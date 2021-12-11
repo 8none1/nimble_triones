@@ -32,24 +32,24 @@ If you want to improve the coverage, simply add more ESP32s.  Flash them and swi
 
 I bought some cheapo LED strips from Amazon and it turned out they have a BTLE interface in the PSU.  The app you can download is fine and everything, but I've got a Node Red install that needs fresh meat.
 
-## Python based Raspberry Pi alternative
+### Python based Raspberry Pi alternative
 I tried with Python and a Raspberry Pi:  https://github.com/8none1/pytrionesmqtt
 It works, but Bluez doesn't like these lights.  Bluepy seems OK (it's API is ❤️).  But ultimately it only worked occasionally. 
 It wasn't reliable enough to become part of a home automation system, so I went looking for something else.
 
-## C++ & ESP32 native BLE library
+### C++ & ESP32 native BLE library
 I found this project and forked it:  https://github.com/8none1/ble-light-bulb
 Well done to kakopappa, this got me going on an ESP32 and it was faster and more reliable than the Pi.
 But, urgh.  The ESP32 BT LE stack is unstable, but more importantly it's massive. I ran out of storage space for my sketch using the ESP32 Bluetooth library and the OTA library!
 It works, but I couldn't enable OTA updates and MQTT support without running out of space.  So I sacked it off.
 
-## C++ & ESP32 Nimble library
+### C++ & ESP32 Nimble library
 This is where this sketch comes in.  Caveat: I really hate C++. You can tell just how much I hate it by looking at the spaghetti code I wrote.
 However - this works. Kinda.  OTA support is currently disabled, but it can be enabled if you want.
 
-### How to use this sketch
+# How to use this sketch
 
-#### Prerequisites 
+## Prerequisites 
  - **Arduino IDE**.  There are no doubt ways to work without using the Arduino IDE, but that's up to you to work out.
  - **ESP32 board support** in the Arduino IDE.  Easy enough, just google "esp32 board manager arduino".
  - **[NimBLE library](https://github.com/h2zero/NimBLE-Arduino)**.  It's in the library manager in the Arduino IDE, install it from there.
@@ -73,7 +73,7 @@ However - this works. Kinda.  OTA support is currently disabled, but it can be e
  You can have more than one device in your network.  They will change their hostnames dynamically to include the last octet of the IP address they get from DHCP.  They will communicate with each other
  (and you and your computers) over MQTT.  They do this learn about who has the best connection quality to a given device and respond to requests that they are best suited to answer.  Neat!
 
- #### How to structure your MQTT messages
+ ### How to structure your MQTT messages
 
  These devices look for JSON formatted MQTT payloads sent to specific topics.  You can change these to be whatever you want of course, but the code is a bit of a mess so be warned.
 
@@ -89,24 +89,24 @@ If the receiving ESP32 can also see the same MAC address it will decide if the R
 
 The global topic is subscribed to by each ESP32.  If you want to send a message to a specific ESP32 use the `mqttControlTopic` which by default is `triones/control/<IP Address of the ESP32>`.
 
-#### Control Payloads
+## Control Payloads
 
-* `{"action":"scan"}` - ask the ESP32s to do a BT LE scan and report what they can see to the mqttPubTopic.  Other devices also listen to this topic to learn about other LED strips around the network.
+ * `{"action":"scan"}` - ask the ESP32s to do a BT LE scan and report what they can see to the mqttPubTopic.  Other devices also listen to this topic to learn about other LED strips around the network.
  * `{"action":"ping", "mac":"aa:bb:cc:dd:ee:ff"}` - asks for a simple reply from the device to the mqttPubTopic topic.
  * `{"action":"disconnect", "mac":"aa:bb:cc:dd:ee:ff"}` - disconnect from this LED controller
- * `{"action":"status", "mac":"aa:bb:cc:dd:ee:ff"}` - Report the status of this device to the mqttPubTopic topic
+ * `{"action":"status", "mac":"aa:bb:cc:dd:ee:ff"}` - Report the status of this device to the mqttPubTopic topic (status is also reported automatically when you press the "on" button on the remote).
  * `{"action":"set", "mac":"aa:bb:cc:dd:ee:ff", ..... }` - Send a command to change colour, mode, brightness, power, etc to this device.  See below for more information.
 
- #### Set Control Payloads
+ ### "Set" Control Payloads
 
- These actually turn your lights on and off.
-  All `set` actions must have a mac address, and then one or many of the following:
+Set payloads write to the Triones devices.  These actually turn your lights on and off, change the colour and so on.
+All `set` actions must have a mac address, and then one or many of the following:
 
  * `power` - JSON boolean so `true` or `false` (unquoted) e.g. `{"action":"set", "mac":"aa:bb:cc:dd:ee:ff", "power":true}`
  * `rgb` - JSON byte array (0-255) for R,G,B like [0,255,0]. e.g. red `{"action":"set", "mac":"aa:bb:cc:dd:ee:ff", "rgb":[255,0,0]}`
-  * `rgb` also supports the optional `percentage` key to adjust brightness.  This simple divides the RGB values by the percentage, so 50% red 255 becomes red 128. e.g. `{"action":"set", "mac":"aa:bb:cc:dd:ee:ff", "rgb":[255,0,0], "percentage":50}`
+     * `rgb` also supports the optional `percentage` key to adjust brightness.  This simple divides the RGB values by the percentage, so 50% red 255 becomes red 128. e.g. `{"action":"set", "mac":"aa:bb:cc:dd:ee:ff", "rgb":[255,0,0], "percentage":50}`
  * `mode` - value between 37 and 56. See the code for what each mode does. e.g. `{"action":"set", "mac":"aa:bb:cc:dd:ee:ff", "mode":41}`
-  * `mode` also supports the optional `speed` key.  Speed is between 1 (fast) and 31 (slow) e.g. `{"action":"set", "mac":"aa:bb:cc:dd:ee:ff", "mode":41, "speed": 4}`
+     * `mode` also supports the optional `speed` key.  Speed is between 1 (fast) and 31 (slow) e.g. `{"action":"set", "mac":"aa:bb:cc:dd:ee:ff", "mode":41, "speed": 4}`
 
 You can include more than one control type in your JSON payload, so for example, if you wanted to power on and set the colour to blue you could set the payload to:
 
@@ -129,18 +129,19 @@ $ mosquitto_pub -t triones/control/global -m "{\"mac\":\"aa:bb:cc:dd:ee:ff\",\"a
 
 The ESP will take care of connecting, or retrying 10 times before giving up.  It will then stay connected for as long as it can.  This makes subsequent commands almost instantaneous and will generate "power on" message when you switch the LEDs on with the remote.  N.B: only power on messages are generated when using the remote, that seems to be just how it works.  If you want more accurate information about what the lights are doing, just send a status message.  I used Node Red to send a status request every 10 minutes.
 
+## Integration with Alexa & Node Red
+The JSON formatted messages are designed to be compatible with the output of the (node-red-contrib-amazon-echo)[https://flows.nodered.org/node/node-red-contrib-amazon-echo] node in Node Red.  You can relatively easily plumb the output from the virtual Hue device in to an MQTT topic and control the Triones devices with Alexa.
+For example:
+Create a light using the above Node, and connect it's output to a `function` node that adds the mac address:
+```
+var in_msg = msg;
+in_msg["mac"] = "78:82:a4:00:05:1e";
+in_msg["action"] = "set";
+return in_msg;
+```
+The rest of the payload coming out of the node is compatible, e.g. `percentage` and the `rgb` array can be sent to the mqttGlobalTopic as is (you will need to add the mac address and action as above though).
 
-Update:  I've spent a few evenings over the last week getting to grips with C++ and NimBLE.  I'm starting to really like NimBLE.  I understand some of the C++iness about it now.
-I still have a few kinks to work out, mainly around null pointers, but it's pretty much working now.
-The main problem is the very unreliable initial connection. I'm still trying to get to the bottom of this. (See below)
-
-I also discovered that if you keep a callback registered and the connection up then the lights will tell you when someone presses the power button on the remote to power the lights on.  But that's all it does.  It doesn't tell you when they change colour or anything, so it's pretty much useless. Much like the rest of these lights.
-
-Update 2021-12-03:  The current version pretty much works.  It connects first time about 80% of the time, if you're in range. Reconnection now work and make it a lot faster.  
-The big big big problem is still the range of the ESP32.  My iPhone 8 can talk to the lights from the other end of the house, but the ESP32 struggles at half that distance.  (I don't live in a castle).
-I might try tweaking the connection params some more.
-In the meantime, it needs some tidy up but it's ready for testing and replacing my Pi based bluepy version.
-
+You can also take the output of the status topic and send that back in to the "Amazon Echo Hub" to dynamically update the status in Alexa of the Triones lights.  If you schedule a `status` message every 10 minutes you can hook up the mqttPubTopic to the Amazon Echo Hub node with a bit of Javascript to convert the mac address back in to the device name.  If people are interested in doing this, I can provide more information.  Suffice to say, it's not very hard to add your Triones devices to Alexa with this, that was one of the goals from the start.
 
 # Problems that still exist
  - The biggest problem seems to be range.  At an RSSI of -80 or worse (so lower numbers) things get a bit hit and miss.  I've also had an ESP32 about 1M from a Triones device and report RSSI of -75, so yeah.  Crappy.

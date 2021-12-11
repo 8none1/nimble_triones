@@ -1,7 +1,7 @@
 #include <NimBLEDevice.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
-//#include <ArduinoOTA.h> // This does work, but I /think/ it effects the reliability of BTLE. So disabled here.
+#include <ArduinoOTA.h> // This does work, but I /think/ it effects the reliability of BTLE. So disabled here.
 #include <ArduinoMqttClient.h>
 #include <ArduinoJson.h>
 #include <string>
@@ -95,10 +95,13 @@ class ClientCallbacks : public NimBLEClientCallbacks {
 
     void onDisconnect(NimBLEClient * pClient) {
         digitalWrite(LED, !digitalRead(LED));
-        StaticJsonDocument<64> temp_doc;
-        temp_doc["mac"] = pClient->getPeerAddress().toString();
-        temp_doc["disconnected"] = true;
-        sendMqttMessage(temp_doc);
+        StaticJsonDocument<64> tempDoc;
+        tempDoc["mac"] = pClient->getPeerAddress().toString();
+        tempDoc["disconnected"] = true;
+        sendMqttMessage(tempDoc);
+        Serial.print("Disconnected from device: ");
+        const char* mac = tempDoc["mac"];
+        Serial.println(mac);
     };
 
     bool onConnParamsUpdateRequest(NimBLEClient * pClient, const ble_gap_upd_params * params) {
@@ -110,10 +113,11 @@ class ClientCallbacks : public NimBLEClientCallbacks {
             The fourth is a multiple of 10ms that dictates how long to wait before considering the connection dropped if no packet is received, I usually keep this around 100-200 (1-2 seconds).
             The last 2 parameters I would suggest not specifying, they are the scan parameters used when calling connect() as it will scan to find the device you're connecting to, the default values work well.
         */
-        // if(params->itvl_min < 24) { /** 1.25ms units */
-        //     return false;
-        // } else if(params->itvl_max > 40) { /** 1.25ms units */
-        //     return false;
+        //  if(params->itvl_min < 24) { /** 1.25ms units */
+        //      return false;
+        //  } else if(params->itvl_max > 40) { /** 1.25ms units */
+        //      return false;
+        //  };
         // } else if(params->latency > 2) { /** Number of intervals allowed to skip */
         //     return false;
         // } else if(params->supervision_timeout > 100) { /** 10ms units */
@@ -141,8 +145,10 @@ void onScanComplete(NimBLEScanResults results) {
     for (int i=0; i < MAXDEVICES; i++) {
         std::string mac = localDevices[i].macAddr.c_str();
         if (mac != "FISH") {
-            Serial.println(i);
-            Serial.println(mac.c_str());
+            Serial.print(i);
+            Serial.print(" : ");
+            Serial.print(mac.c_str());
+            Serial.print(" : ");
             Serial.println(localDevices[i].rssi);
             JsonObject device = devices.createNestedObject();
             device["mac"]  = localDevices[i].macAddr;
@@ -184,8 +190,8 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
                         if (discoveredDevice.rssi > realRssi) {
                             // We are better
                             localDevices[i].rssi = discoveredDevice.rssi;
-                            Serial.print("Updated existing device with better rssi from scan: ");
-                            Serial.println(discoveredDevice.macAddr.c_str());
+                            // Serial.print("Updated existing device with better rssi from scan: ");
+                            // Serial.println(discoveredDevice.macAddr.c_str());
                             std::string scanTopic = mqttPubTopic;
                             scanTopic += "/scan";
                             sendMqttMessage(doc,scanTopic);
@@ -238,25 +244,26 @@ void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData,
 void mqttCallback(int messageSize) {
     digitalWrite(LED, !digitalRead(LED));
     std::string mt = mqttClient.messageTopic().c_str();
-    //Serial.print("X ");
+    //Serial.print("Topic received: ");
     //Serial.println(mt.c_str());
+
     std::string scanTopic = mqttPubTopic;
     scanTopic += "/scan";
     if ( (mt != mqttControlTopic) && (mt != mqttGlobalTopic) && (mt != scanTopic) ) {
         return;
     }
 
-
     StaticJsonDocument<200> doc;  // Shrink this later? 200 seems OK though.  100 caused stack overflows
     DeserializationError err = deserializeJson(doc, mqttClient);
 
     if (err) {
         Serial.println(F("Couldn't understand the JSON object. Giving up"));
-        sendMqttMessage(F("{\"state\":false, \"message\":\"Invalid JSON\"}"));
+        //sendMqttMessage(F("{\"state\":false, \"message\":\"Invalid JSON\"}"));
         return;
     }
 
     if (mt == scanTopic) {
+        Serial.println("In scan topic");
         // A scan result was received
         std::string myIpAddr = ipAddr.toString().c_str();
         if (doc["scanningDevice"] == myIpAddr) {
@@ -266,7 +273,8 @@ void mqttCallback(int messageSize) {
             std::string remoteMac = doc["mac"];
             int8_t remoteRssi = doc["rssi"];
             Serial.print("Device announced by remote ESP32: ");
-            Serial.println(remoteMac.c_str());
+            Serial.print(remoteMac.c_str());
+            Serial.print(" ");
             Serial.print("RSSI: ");
             Serial.println(remoteRssi);
 
@@ -274,12 +282,12 @@ void mqttCallback(int messageSize) {
                 TrionesDevice localDevice = localDevices[i];
                 std::string localMac = localDevice.macAddr;
                 if (localMac == remoteMac) {
-                    Serial.println("Found the same device in our list");
+                    //Serial.println("Found the same device in our list");
                     int8_t localRssi = localDevice.rssi;
                     if (localRssi <= remoteRssi) {
                         // Our device has worse rssi, so replace it with the remote one.
                         // We indicate remote by inverting the rssi so it's above zero
-                        Serial.println("Other end is better");
+                        //Serial.println("Other end is better");
                         localDevice.macAddr = -remoteRssi;
                         return;
                     } else {
@@ -316,6 +324,7 @@ void mqttCallback(int messageSize) {
 
     // Deal with global requests
     if (mt == mqttGlobalTopic){
+        Serial.println("Global topic");
         if (action == "ping") {
             StaticJsonDocument<64> ping_doc;
             ping_doc["ipAddr"] = ipAddr.toString();
@@ -329,23 +338,23 @@ void mqttCallback(int messageSize) {
             return;
         } else if ( (action == "set") || (action == "status") ) {
             // Global set action called, can we service this request?
-            Serial.print("Global set or status called, checking if we can help with device: ");
+            //Serial.print("Global set or status called, checking if we can help with device: ");
             std::string requestMac = doc["mac"].as<std::string>();
-            Serial.println(requestMac.c_str());
+            //Serial.println(requestMac.c_str());
             bool match = false;
             for (int i=0; i<MAXDEVICES; i++) {
                 TrionesDevice device = localDevices[i];
                 std::string ourMac = device.macAddr;
                 if (ourMac == requestMac) {
                     if (device.rssi < 0) {
-                        Serial.println("MAC match found, I'll help");
+                        //Serial.println("MAC match found, I'll help");
                         match = true;
                         break;
                     };
                 };
             };
             if (!match) {
-                Serial.println("No matching device locally, can't help");
+                //Serial.println("No matching device locally, can't help");
                 return;
             }
             // If we get here we should have a device in our list so we can pass this request on as if it was intended for us
@@ -353,12 +362,31 @@ void mqttCallback(int messageSize) {
             mt = mqttControlTopic;
             // :chef_kiss:
         };
-    } else {
-        Serial.println("Fell through to the end of the global topic options");
-        return;
-    }
+    };
 
     if (mt == mqttControlTopic) {
+        Serial.println("Control topic");
+        if (action == "restart") {
+            Serial.println("In restart function");
+            size_t numClients = NimBLEDevice::getClientListSize();
+            if (numClients > 0) {
+                std::list<NimBLEClient*> *clientList = NimBLEDevice::getClientList();
+                for (auto it = clientList->begin(); it != clientList->end(); it++) {
+                    if ((*it)->isConnected()) {
+                        Serial.println((*it)->getPeerAddress().toString().c_str());
+                        Serial.println("Disconnecting");
+                        (*it)->disconnect();
+                    }
+                }
+            }
+            NimBLEDevice::deinit();
+            Serial.println("Restarting...");
+            sendMqttMessage("Restarting");
+            delay(500);
+            ESP.restart();
+            return;
+        };
+
         if (action == "disconnect") {
             const char* mac = doc["mac"];
             NimBLEAddress addr = NimBLEAddress(mac);
@@ -383,9 +411,9 @@ void mqttCallback(int messageSize) {
                 NimBLEAddress addr = NimBLEAddress(mac);
                 uint8_t payload[] = {0xEF, 0x01, 0x77};
                 if (do_write(addr, payload, sizeof(payload))) {
-                    Serial.println(F("Status request successful"));
+                    //Serial.println(F("Status request successful"));
                 } else {
-                    Serial.println(F("Status failed"));
+                    //Serial.println(F("Status failed"));
                     sendMqttMessage(F("{\"state\":false}"));
                 }
             }
@@ -401,43 +429,67 @@ void mqttCallback(int messageSize) {
 
             const char* mac = doc["mac"];
             NimBLEAddress addr = NimBLEAddress(mac);
+            bool powerState = false;
+            bool rgbSet = false;
+            uint8_t rgbArray[3] = {0};
 
-            if (!doc["power"].isNull()) {
+            if ( ! doc["rgb"].isNull() ) {
+                rgbArray[0] = doc["rgb"][0];
+                rgbArray[1] = doc["rgb"][1];
+                rgbArray[2] = doc["rgb"][2];
+                rgbSet = true;
+            };
+                        
+            // Power set
+            if ( ! doc["power"].isNull()) {
                 digitalWrite(LED, !digitalRead(LED));
-                Serial.println("Setting power");
                 uint8_t power = ( doc["power"] == true ? 0x23 : 0x24 );
                 uint8_t payload[] = {0xCC, power, 0x33};
+                if (power == 0x23) {
+                    powerState=true;
+                }
                 if (do_write(addr, payload, sizeof(payload))) {
-                    Serial.println("Successfully set power");
                     sendMqttMessage(F("{\"state\":true, \"message\":\"Power set on device\"}"));
                 } else {
-                    Serial.println("Power set failed");
                     sendMqttMessage(F("{\"state\":false, \"message\":\"Failed to set power on device\"}"));
                 }
             };
 
-            if (doc["rgb"]) {
+            // RGB & brightness set
+            if (rgbSet) {
                 digitalWrite(LED, !digitalRead(LED));
+                //                          r   g   b   w  (cheaper lights don't have white leds, so leave as zero)
                 uint8_t payload[7] = {0x56, 00, 00, 00, 00, 0xF0, 0xAA};
-                uint8_t percentage;
-                if (doc["percentage"] == nullptr) {
-                    percentage = 100;
-                } else {
-                    percentage = doc["percentage"];
-                }
-                // TODO the lights only scale in chunks of 15, so make this do that
-                float scale_factor = percentage / 100.0;
-                payload[1] = (int) doc["rgb"][0] * scale_factor;
-                if (payload[1] > 255) payload[1] = 255;
-                payload[2] = (int) doc["rgb"][1] * scale_factor;
-                if (payload[2] > 255) payload[2] = 255;
-                payload[3] = (int) doc["rgb"][2] * scale_factor;
-                if (payload[3] > 255) payload[3] = 255;
+                int pp = 100;
+                if ( ! doc["percentage"].isNull() ) pp = doc["percentage"];
+                if ( pp == 0) pp = 100; // equally, if brightness is zero, we could power off, but I think this is better for now
+
+                Serial.print("Percentage: ");
+                Serial.println(pp);
+
+                if ((powerState) && (pp==100)) {
+                    // I've seen it send "power true" and "percent zero" so this might not always work
+                    if ( (rgbArray[0] == 0) && (rgbArray[1] == 0) && (rgbArray[2] == 0) ) {
+                        // Everything was zero, so presto changeo...
+                        rgbArray[0] = 255;
+                        rgbArray[1] = 255;
+                        rgbArray[2] = 255;
+                    }
+                };
+
+                float scale_factor = float(pp) / 100.0;
+                for (int i=0; i<3; i++) {
+                    rgbArray[i] = int(rgbArray[i] * scale_factor);
+                    if (rgbArray[i] > 255) rgbArray[i] = 255;
+                };
+
+                for (int i=0; i<3; i++) {
+                    payload[i+1] = rgbArray[i];
+                };
+
                 if (do_write(addr, payload, sizeof(payload))) {
-                    Serial.println("Set RGB worked");
                     sendMqttMessage(F("{\"state\":true, \"message\":\"RGB set on device\"}"));
                 } else {
-                    Serial.println("Set RGB failed");
                     sendMqttMessage(F("{\"state\":false, \"message\":\"RGB set failed\"}"));
                 }
             };
@@ -479,10 +531,8 @@ void mqttCallback(int messageSize) {
                     payload[1] = mode;
                     payload[2] = speed;
                     if (do_write(addr, payload, sizeof(payload))) {
-                        Serial.println("Set mode and speed correct");
                         sendMqttMessage(F("{\"state\":true, \"message\":\"mode set on device\"}"));
                     } else {
-                        Serial.println("Set mode failed");
                         sendMqttMessage(F("{\"state\":false, \"message\":\"mode set failed\"}"));
                     }
                 };
@@ -496,71 +546,72 @@ void mqttCallback(int messageSize) {
 bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
     digitalWrite(LED, !digitalRead(LED));
     NimBLEClient * pClient = nullptr;
+
     if (NimBLEDevice::getClientListSize()) {
+        Serial.println("in get clientlist");
         // There are some existing clients available, try and find one to reuse
         pClient = NimBLEDevice::getClientByPeerAddress(bleAddr);
         if (pClient) {
+            Serial.println("Found a client with the mac address I'm looking for");
             // It's possible (and in our case, likely) that we're still connected to the device, so we need to deal with that here
-            if ( !pClient->isConnected()) {
-                if (!pClient->connect(bleAddr, false)) {
+            if ( ! pClient->isConnected() ) {
+                Serial.println("It's not connected");
+                if ( ! pClient->connect(bleAddr, false)) {
                     Serial.println("Tried to reconnect to known device, but failed");
-                } else {
-                    Serial.println("Correctly reconnected to device");
                 }
-            } else {
-                Serial.println("Found existing connected client, so using that");
-            }
+            } else {Serial.println("It is connected");};
         } else {
             Serial.println("No existing client, trying an old one");
             pClient = NimBLEDevice::getDisconnectedClient();
         }
+    } else {
+        Serial.println("No existing clients at all");
     }
-    // If we get here we are either connected OR we need to try and reuse an old client
+    
+    // If we get here we are either connected OR we need to try and reuse an old client before creating a new client
     if (!pClient) {
         // There wasn't an old one to reuse, create a new one
+        Serial.println("Failed to find existing client");
         if(NimBLEDevice::getClientListSize() >= NIMBLE_MAX_CONNECTIONS) {
             Serial.println("Max connections reached.  No more available.");
             return false;
         }
         pClient = NimBLEDevice::createClient();
         Serial.println("Created new client");
-        pClient->setConnectionParams(7,7,0,200); // As a test setting this here to see if we can connect 1st time more often.
+        pClient->setConnectionParams(7,7,0,200);
         //  Testing shows that this does seem to allow initial connections and reconnections more readily. Even though the tolerances are much lower
         //  it does seem to work.  It will retry at RSSI -90, but will connect usually within the first 5 tries.
 
         pClient->setClientCallbacks(&clientCB, false);
         pClient->setConnectTimeout(5);
-
-        if (!pClient->connect(bleAddr, false)) {
-            Serial.println("Created a new client, but still failed to connect. Will retry");
-        }
+        pClient->connect(bleAddr, false);
     }
 
     if(!pClient->isConnected()) {
+        Serial.println("Second connect bit now, client is still not connected");
         int i = 0;
         while ( (i <= 10) && (!pClient->isConnected()) ) {
             if (!pClient->connect(bleAddr, false)) {
                 Serial.print("Failed to connect. In retry loop: ");
                 Serial.println(i);
                 digitalWrite(LED, !digitalRead(LED));
-                delay(1000);
+                delay(500);
                 i++;
             }
         };
         if (!pClient->isConnected()){
             Serial.println("Retrying failed.  Sorry");
-            StaticJsonDocument<128> temp_doc;
-            temp_doc["ipAddr"] = WiFi.localIP().toString();
-            temp_doc["status"] = "Connect failed";
-            temp_doc["state"] = false;
-            temp_doc["mac"] = bleAddr.toString();
-            sendMqttMessage(temp_doc);
+            StaticJsonDocument<128> tempDoc;
+            tempDoc["ipAddr"] = WiFi.localIP().toString();
+            tempDoc["status"] = "Connect failed";
+            tempDoc["state"] = false;
+            tempDoc["mac"] = bleAddr.toString();
+            sendMqttMessage(tempDoc);
             NimBLEDevice::deleteClient(pClient);
             return false;
         }
     }
 
-    // If we get here, then we really should be connected by now
     Serial.print("Connected to device: ");
     Serial.println(pClient->getPeerAddress().toString().c_str());
 
@@ -631,8 +682,8 @@ bool findTrionesDevices(){
     Serial.print("Delay: ");
     Serial.println(s);
     delay(s);
-    Serial.println("Doing scan for 30 seconds");
-    pBLEScan->start(30, *onScanComplete, false);
+    Serial.println("Starting scan...");
+    pBLEScan->start(15, *onScanComplete, false); // This was 30 seconds
     return true;
 }
 
@@ -643,7 +694,7 @@ void setup (){
     Serial.println("Starting NimBLE Client");
     NimBLEDevice::setScanDuplicateCacheSize(10);
     NimBLEDevice::init("");
-    NimBLEDevice::setPower(ESP_PWR_LVL_P9); /** +9db */
+    NimBLEDevice::setPower(ESP_PWR_LVL_P9); // max power
     NimBLEDevice::setMTU(23);  // This is what the lights ask for, so set up front. I think this made it more reliable to connect first time.
     
     // Set up Wifi
@@ -664,13 +715,6 @@ void setup (){
     Serial.println(ipAddr);
     Serial.print("Hostname: ");
     Serial.println(hostname.c_str());
-
-    //Set up OTA
-    //  After all the effort I went to in order to enable OTA, it seems that OTA is quite chatty on the wifi
-    //  and makes BT LE harder.  So disabling it for now.  Maybe it can come back later.  If you need it, then there
-    //  only a few lines to uncomment
-    //ArduinoOTA.setHostname(HOSTNAME);
-    //ArduinoOTA.begin();
 
     // Setup MQTT
     if (mqttClient.connect(broker, port)) {
@@ -698,12 +742,20 @@ void setup (){
     }
     pinMode(LED, OUTPUT);
     digitalWrite(LED, !digitalRead(LED));
-    StaticJsonDocument<100> temp_doc;
-    temp_doc["ipAddr"] = WiFi.localIP().toString();
-    temp_doc["status"] = "Ready";
-    temp_doc["state"] = true;
-    temp_doc["hostname"] = hostname;
-    sendMqttMessage(temp_doc);
+
+    //Set up OTA
+    //  After all the effort I went to in order to enable OTA, it seems that OTA is quite chatty on the wifi
+    //  and makes BT LE harder.  So disabling it for now.  Maybe it can come back later.  If you need it, then there
+    //  only a few lines to uncomment
+    //ArduinoOTA.setHostname(hostname.c_str());
+    //ArduinoOTA.begin();
+
+    StaticJsonDocument<100> tempDoc;
+    tempDoc["ipAddr"] = WiFi.localIP().toString();
+    tempDoc["status"] = "Ready";
+    tempDoc["state"] = true;
+    tempDoc["hostname"] = hostname;
+    sendMqttMessage(tempDoc);
 
     Serial.println("READY");
     

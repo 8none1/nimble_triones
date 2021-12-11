@@ -90,3 +90,8 @@ global_set_test ()
 {
     $P1"triones/control/global" -m "{\"mac\":\"$ST\", \"action\":\"set\", \"rgb\":[255,0,0]}"
 }
+
+global_restart ()
+{
+    $P1"triones/control/global" -m "{\"action\":\"restart\"}"
+}
