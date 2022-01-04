@@ -129,7 +129,7 @@ $ mosquitto_pub -t triones/control/global -m "{\"mac\":\"aa:bb:cc:dd:ee:ff\",\"a
 The ESP will take care of connecting, or retrying 10 times before giving up.  It will then stay connected for as long as it can.  This makes subsequent commands almost instantaneous and will generate "power on" message when you switch the LEDs on with the remote.  N.B: only power on messages are generated when using the remote, that seems to be just how it works.  If you want more accurate information about what the lights are doing, just send a status message.  I used Node Red to send a status request every 10 minutes.
 
 ## Integration with Alexa & Node Red
-The JSON formatted messages are designed to be compatible with the output of the (node-red-contrib-amazon-echo)[https://flows.nodered.org/node/node-red-contrib-amazon-echo] node in Node Red.  You can relatively easily plumb the output from the virtual Hue device in to an MQTT topic and control the Triones devices with Alexa.
+The JSON formatted messages are designed to be compatible with the output of the [node-red-contrib-amazon-echo](https://flows.nodered.org/node/node-red-contrib-amazon-echo) node in Node Red.  You can relatively easily plumb the output from the virtual Hue device in to an MQTT topic and control the Triones devices with Alexa.
 For example:
 Create a light using the above Node, and connect it's output to a `function` node that adds the mac address:
 ```
