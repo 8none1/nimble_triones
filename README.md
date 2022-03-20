@@ -1,6 +1,3 @@
-# DRAFT README - NOT COMPLETE
-
-
 # nimble_triones
 Control Triones based LED strips from an ESP32 using the Nimble BTLE stack and MQTT.
 

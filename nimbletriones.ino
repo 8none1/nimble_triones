@@ -29,7 +29,7 @@ IPAddress ipAddr;
 // (one for mac, one for rssi) and so on.  In the end I've settled on a struct for the mac and rssi
 // and a single array of 5 structs for the devices.
 // This is all new to me, if you can improve it please send a PR and teach me.
-const uint8_t MAXDEVICES = 5;
+const uint8_t MAXDEVICES = 7;
 typedef struct {
     std::string macAddr;
     int rssi;
@@ -137,7 +137,7 @@ static ClientCallbacks clientCB;
 
 void onScanComplete(NimBLEScanResults results) {
     Serial.println("Done scanning");
-    StaticJsonDocument<384> tableDoc; // This feels like it's very big was 512
+    StaticJsonDocument<512> tableDoc; // This feels like it's very big was 512
     tableDoc["scanningHost"] = ipAddr.toString();
     tableDoc["type"] = "scanTable";
     JsonArray devices = tableDoc.createNestedArray("devices");
@@ -324,7 +324,6 @@ void mqttCallback(int messageSize) {
 
     // Deal with global requests
     if (mt == mqttGlobalTopic){
-        Serial.println("Global topic");
         if (action == "ping") {
             StaticJsonDocument<64> ping_doc;
             ping_doc["ipAddr"] = ipAddr.toString();
@@ -365,7 +364,6 @@ void mqttCallback(int messageSize) {
     };
 
     if (mt == mqttControlTopic) {
-        Serial.println("Control topic");
         if (action == "restart") {
             Serial.println("In restart function");
             size_t numClients = NimBLEDevice::getClientListSize();
@@ -484,6 +482,9 @@ void mqttCallback(int messageSize) {
                 };
 
                 for (int i=0; i<3; i++) {
+                    if (rgbArray[i] > 255) {
+                        rgbArray[i] = 255;
+                    }
                     payload[i+1] = rgbArray[i];
                 };
 
@@ -516,7 +517,7 @@ void mqttCallback(int messageSize) {
                 // # 54 : 0x36: Purple strobe flash
                 // # 55 : 0x37: White strobe flash
                 // # 56 : 0x38: Seven color jumping change
-                // # 65 : 0x41: Looks like this might be solid colour as set by remote control
+                // # 65 : 0x41: Looks like this might be solid colour as set by remote control, you cant set this it only shows in the status.
                 // # 97 : 0x61: RGB fade
                 // # 98 : 0x62: RGB cycle
                 //
@@ -552,14 +553,16 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
         // There are some existing clients available, try and find one to reuse
         pClient = NimBLEDevice::getClientByPeerAddress(bleAddr);
         if (pClient) {
-            Serial.println("Found a client with the mac address I'm looking for");
+            //Serial.println("Found a client with the mac address I'm looking for");
             // It's possible (and in our case, likely) that we're still connected to the device, so we need to deal with that here
             if ( ! pClient->isConnected() ) {
-                Serial.println("It's not connected");
+                //Serial.println("It's not connected");
                 if ( ! pClient->connect(bleAddr, false)) {
                     Serial.println("Tried to reconnect to known device, but failed");
                 }
-            } else {Serial.println("It is connected");};
+            } else {
+                Serial.println("It is connected");
+            }
         } else {
             Serial.println("No existing client, trying an old one");
             pClient = NimBLEDevice::getDisconnectedClient();
@@ -623,13 +626,13 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
     nSvc = pClient->getService(NOTIFY_SERVICE);
 
     if (nSvc) {
-        Serial.println("nSvc correct");
+        //Serial.println("nSvc correct");
         nChr = nSvc->getCharacteristic(NOTIFY_CHAR);
         if (nChr->canNotify()) {
             nChr->subscribe(true, &notifyCB);
         };
     } else {
-        Serial.println("Failed to get nsvc");
+        //Serial.println("Failed to get nsvc");
         return false;
     }
 
@@ -747,8 +750,8 @@ void setup (){
     //  After all the effort I went to in order to enable OTA, it seems that OTA is quite chatty on the wifi
     //  and makes BT LE harder.  So disabling it for now.  Maybe it can come back later.  If you need it, then there
     //  only a few lines to uncomment
-    //ArduinoOTA.setHostname(hostname.c_str());
-    //ArduinoOTA.begin();
+    ArduinoOTA.setHostname(hostname.c_str());
+    ArduinoOTA.begin();
 
     StaticJsonDocument<100> tempDoc;
     tempDoc["ipAddr"] = WiFi.localIP().toString();
@@ -766,12 +769,24 @@ void setup (){
 
 void loop (){
     mqttClient.poll();
-    //ArduinoOTA.handle();
+    ArduinoOTA.handle();
 
     // Flash the light, of course
     unsigned long currentMillis = millis();
     if (currentMillis - previousMillis >= 2500) {
         previousMillis = millis();
         digitalWrite(LED, !digitalRead(LED));
+        if (!mqttClient.connected()) {
+            // It looks like we're dropping off mqtt sometimes, and we don't ever try
+            // to reconnect.  Because we're entirely dependant on receiving a message from
+            // mqtt in order to do something, we'll keep trying to reconnect every 2.5 seconds.
+            // If this doesn't fix it, we'll just reboot once a day.  Balls to it.
+            Serial.println("Trying to reconnect to mqtt...");
+            if (mqttClient.connect(broker, port)) {
+                Serial.println("Reconnected successfully");
+            } else {
+                Serial.println("Failed to reconnect to MQTT");
+            }
+        }
     }
 }
