@@ -6,7 +6,7 @@ Control Triones based LED strips from an ESP32 using the Nimble BTLE stack and M
 
 # Quick start in six steps
 1. Read the prerequisites and flash this sketch to your ESP32
-2. Wait a minute while the ESP32 scans for your device
+2. Wait a few seconds while the ESP32 scans for your device
 3. Send a JSON payload via MQTT like this:
 
 ```
@@ -92,6 +92,7 @@ The global topic is subscribed to by each ESP32.  If you want to send a message 
  * `{"action":"status", "mac":"aa:bb:cc:dd:ee:ff"}` - Report the status of this device to the mqttPubTopic topic (status is also reported automatically when you press the "on" button on the remote).
  * `{"action":"set", "mac":"aa:bb:cc:dd:ee:ff", ..... }` - Send a command to change colour, mode, brightness, power, etc to this device.  See below for more information.
  * `{"action":"restart"}` - Close all connections and restart the ESP32
+ * `{"action":"devicetable"}` - Have each ESP32 in the group send it's view of the Triones devices to MQTT
 
  ### "Set" Control Payloads
 
@@ -125,6 +126,12 @@ $ mosquitto_pub -t triones/control/global -m "{\"mac\":\"aa:bb:cc:dd:ee:ff\",\"a
 
 The ESP will take care of connecting, or retrying 10 times before giving up.  It will then stay connected for as long as it can.  This makes subsequent commands almost instantaneous and will generate "power on" message when you switch the LEDs on with the remote.  N.B: only power on messages are generated when using the remote, that seems to be just how it works.  If you want more accurate information about what the lights are doing, just send a status message.  I used Node Red to send a status request every 10 minutes.
 
+### Additional web interface
+
+There is a very primitive HTTP server running on port 80 which will allow you to perform some limited actions if you can't talk to the device over MQTT for some reason.  At the moment this is limited to one function, but more can be added.
+
+If you POST to `<ip address>/reboot` the ESP32 will reboot.
+
 ## Integration with Alexa & Node Red
 The JSON formatted messages are designed to be compatible with the output of the [node-red-contrib-amazon-echo](https://flows.nodered.org/node/node-red-contrib-amazon-echo) node in Node Red.  You can relatively easily plumb the output from the virtual Hue device in to an MQTT topic and control the Triones devices with Alexa.
 For example:
@@ -142,9 +149,7 @@ You can also take the output of the status topic and send that back in to the "A
 # Problems that still exist
  - The biggest problem seems to be range.  At an RSSI of -80 or worse (so lower numbers) things get a bit hit and miss.  I've had an ESP32 about 1M from a Triones device and still reports RSSI of -75, so yeah.  Crappy.
  
- - Enabling OTA and then trying to set a device results in a crash.  I got a stack trace but haven't done anything with it yet.  I think there is a new version of the board support package due real soon now, I'll try that first.
-
- - If you enable mDNS you can't connect to BLE devices.  Edit: this might not be true.  I should renable it at some point and test.
+  - If you enable mDNS you can't connect to BLE devices.  Edit: this might not be true.  I should renable it at some point and test.
  
  # Future of this project
  In two words; not much.  I'm about done with the functionality I need. I do believe that this is the most reliable Triones controller on Github, despite my crappy code. This is in part to my hacks to make it work (connection params for example), and my extensive if..else spaghetti which should catch the many ways in which this device can fail to respond correctly.  However, once I put an ESP32 upstairs to control the kid's lights, and it fails to work more than a few times, I will give up.  These Triones lights are fine for using with the IR remote, but their BT LE implementation seems broken.  See below for more on that.
@@ -156,4 +161,6 @@ You can also take the output of the status topic and send that back in to the "A
  vs the cheapest Wifi controlled lights I can find on Amazon for £15:  https://amzn.to/32XYTLv  (affiliate link)
 
  If I hadn't already bought a load of the Bluetooth ones, I would spend my money on the Wifi connected ones instead.  I haven't checked, but I would guess that the wifi ones are using the Tuya platform.  Tuya have documented their API and you can (currently) get an API key for free.  There are lots of projects out there to help you.  Save yourself a lot of time and bother.
+ 
+ Update 2022-03-27:  I've just found and fixed a couple of bugs which I think have been causing what I thought were lock-ups, but were actually just network drop outs (causing MQTT to disconnect and there was no mechanism to reconnect).  I've also fixed a pretty glaring bug in the code to allow multiple ESP32s in the same group controlling multiple lights.  I've been running this code for months now, and actually, it's been pretty good.  Range is still an issue, but it's not as bad as I feared.
  
