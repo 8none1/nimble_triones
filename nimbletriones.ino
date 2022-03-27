@@ -6,6 +6,8 @@
 #include <ArduinoJson.h>
 #include <string>
 #include "wificreds.h"
+#include <WebServer.h>
+
 
 
 // Define your WiFi settings in wificreds.h
@@ -51,6 +53,9 @@ const int  port = 1883;
 std::string mqttPubTopic;
 std::string mqttControlTopic;
 std::string mqttGlobalTopic;
+std::string subToPub;
+
+WebServer server(80);
 
 // Forward declarations
 // I don't know how to C++
@@ -91,6 +96,10 @@ class ClientCallbacks : public NimBLEClientCallbacks {
         //pClient->updateConnParams(120,120,120,60); // This is more lenient 
         //pClient->setConnectionParams(7,7,0,200);// This is what the lights would like us to use.  It does work, but it doesn't leave much room to manoeuvre 
         digitalWrite(LED, !digitalRead(LED));
+        NimBLEAddress addr = pClient->getPeerAddress();
+        std::string mac = addr.toString();
+        Serial.print("Device connected: ");
+        Serial.println(mac.c_str());
     };
 
     void onDisconnect(NimBLEClient * pClient) {
@@ -133,10 +142,7 @@ class ClientCallbacks : public NimBLEClientCallbacks {
     };
 };
 
-static ClientCallbacks clientCB;
-
-void onScanComplete(NimBLEScanResults results) {
-    Serial.println("Done scanning");
+void sendDeviceTable() {
     StaticJsonDocument<512> tableDoc; // This feels like it's very big was 512
     tableDoc["scanningHost"] = ipAddr.toString();
     tableDoc["type"] = "scanTable";
@@ -156,6 +162,13 @@ void onScanComplete(NimBLEScanResults results) {
         }
     };
     sendMqttMessage(tableDoc, mqttPubTopic); // the mqtt client has a payload limit of 256 bytes, if you're running more than 5 Triones devices this will be a problem.
+}
+
+static ClientCallbacks clientCB;
+
+void onScanComplete(NimBLEScanResults results) {
+    Serial.println("Done scanning");
+    sendDeviceTable();
 };
 
 class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
@@ -263,7 +276,7 @@ void mqttCallback(int messageSize) {
     }
 
     if (mt == scanTopic) {
-        Serial.println("In scan topic");
+        Serial.println("MQTT Scan result received");
         // A scan result was received
         std::string myIpAddr = ipAddr.toString().c_str();
         if (doc["scanningDevice"] == myIpAddr) {
@@ -272,25 +285,28 @@ void mqttCallback(int messageSize) {
         } else {
             std::string remoteMac = doc["mac"];
             int8_t remoteRssi = doc["rssi"];
-            Serial.print("Device announced by remote ESP32: ");
+            Serial.print("Triones device found by remote worker: ");
             Serial.print(remoteMac.c_str());
             Serial.print(" ");
             Serial.print("RSSI: ");
             Serial.println(remoteRssi);
 
+            Serial.println("Looking in my device table.");
             for (int i=0; i < MAXDEVICES; i++) {
                 TrionesDevice localDevice = localDevices[i];
                 std::string localMac = localDevice.macAddr;
                 if (localMac == remoteMac) {
-                    //Serial.println("Found the same device in our list");
+                    Serial.println("Found the same device in our list");
                     int8_t localRssi = localDevice.rssi;
                     if (localRssi <= remoteRssi) {
                         // Our device has worse rssi, so replace it with the remote one.
                         // We indicate remote by inverting the rssi so it's above zero
-                        //Serial.println("Other end is better");
-                        localDevice.macAddr = -remoteRssi;
+                        Serial.println("Other end is better");
+                        localDevice.rssi = -remoteRssi;
+                        localDevices[i] = localDevice;
                         return;
                     } else {
+                        Serial.println("We have this device already, but our rssi is better");
                         // mac matches but new remote rssi is worse
                         // so leave everything as is.
                         return;
@@ -335,6 +351,11 @@ void mqttCallback(int messageSize) {
             findTrionesDevices();
             digitalWrite(LED, !digitalRead(LED));
             return;
+        } else if (action == "devicetable") {
+            Serial.println("Show device table");
+            sendDeviceTable();
+            digitalWrite(LED, !digitalRead(LED));
+            return;            
         } else if ( (action == "set") || (action == "status") ) {
             // Global set action called, can we service this request?
             //Serial.print("Global set or status called, checking if we can help with device: ");
@@ -432,9 +453,10 @@ void mqttCallback(int messageSize) {
             uint8_t rgbArray[3] = {0};
 
             if ( ! doc["rgb"].isNull() ) {
-                rgbArray[0] = doc["rgb"][0];
-                rgbArray[1] = doc["rgb"][1];
-                rgbArray[2] = doc["rgb"][2];
+                // We need to validate these inputs...
+                rgbArray[0] = (doc["rgb"][0] < 256) ? doc["rgb"][0] : 255;
+                rgbArray[1] = (doc["rgb"][1] < 256) ? doc["rgb"][1] : 255;
+                rgbArray[2] = (doc["rgb"][2] < 256) ? doc["rgb"][2] : 255;
                 rgbSet = true;
             };
                         
@@ -465,7 +487,7 @@ void mqttCallback(int messageSize) {
                 Serial.print("Percentage: ");
                 Serial.println(pp);
 
-                if ((powerState) && (pp==100)) {
+                if ((powerState) && (pp>0)) {
                     // I've seen it send "power true" and "percent zero" so this might not always work
                     if ( (rgbArray[0] == 0) && (rgbArray[1] == 0) && (rgbArray[2] == 0) ) {
                         // Everything was zero, so presto changeo...
@@ -549,7 +571,7 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
     NimBLEClient * pClient = nullptr;
 
     if (NimBLEDevice::getClientListSize()) {
-        Serial.println("in get clientlist");
+        //Serial.println("in get clientlist");
         // There are some existing clients available, try and find one to reuse
         pClient = NimBLEDevice::getClientByPeerAddress(bleAddr);
         if (pClient) {
@@ -568,7 +590,7 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
             pClient = NimBLEDevice::getDisconnectedClient();
         }
     } else {
-        Serial.println("No existing clients at all");
+        Serial.println("No existing client connections at all");
     }
     
     // If we get here we are either connected OR we need to try and reuse an old client before creating a new client
@@ -726,7 +748,7 @@ void setup (){
         mqttControlTopic += ipAddr.toString().c_str();     
         mqttGlobalTopic += "global";
         mqttPubTopic = "triones/status";
-        std::string subToPub = mqttPubTopic;
+        subToPub = mqttPubTopic;
         subToPub += "/#";
 
         Serial.print("Control topic: ");
@@ -737,11 +759,15 @@ void setup (){
         Serial.println(mqttPubTopic.c_str());
         mqttClient.subscribe(mqttControlTopic.c_str());
         mqttClient.subscribe(mqttGlobalTopic.c_str());
-        mqttClient.subscribe(mqttGlobalTopic.c_str());
         mqttClient.subscribe(subToPub.c_str());
         mqttClient.onMessage(mqttCallback);
     } else {
         Serial.println("MQTT connection failed!");
+        for (int c = 0; c < 1000; c++) {
+            digitalWrite(LED, !digitalRead(LED));
+            delay(250);
+        };
+        ESP.restart();
     }
     pinMode(LED, OUTPUT);
     digitalWrite(LED, !digitalRead(LED));
@@ -760,6 +786,13 @@ void setup (){
     tempDoc["hostname"] = hostname;
     sendMqttMessage(tempDoc);
 
+    server.on("/reboot", HTTP_POST, [](){
+        server.send(200, F("text/plain"), "Rebooting...");
+        delay(2000);
+        ESP.restart();
+    });
+    server.begin();
+
     Serial.println("READY");
     
     // When a device comes online it asks everyone to do a scan
@@ -770,6 +803,7 @@ void setup (){
 void loop (){
     mqttClient.poll();
     ArduinoOTA.handle();
+    server.handleClient();
 
     // Flash the light, of course
     unsigned long currentMillis = millis();
@@ -781,9 +815,19 @@ void loop (){
             // to reconnect.  Because we're entirely dependant on receiving a message from
             // mqtt in order to do something, we'll keep trying to reconnect every 2.5 seconds.
             // If this doesn't fix it, we'll just reboot once a day.  Balls to it.
-            Serial.println("Trying to reconnect to mqtt...");
+            Serial.println("MQTT is not connected. Trying to reconnect...");
             if (mqttClient.connect(broker, port)) {
-                Serial.println("Reconnected successfully");
+                Serial.println("Reconnected successfully.  Reconnecting to topics");
+                //Serial.print("Control topic: ");
+                //Serial.println(mqttControlTopic.c_str());
+                //Serial.print("Global topic: ");
+                //Serial.println(mqttGlobalTopic.c_str());
+                //Serial.print("Pub topic: ");
+                //Serial.println(mqttPubTopic.c_str());
+                mqttClient.subscribe(mqttControlTopic.c_str());
+                mqttClient.subscribe(mqttGlobalTopic.c_str());
+                mqttClient.subscribe(subToPub.c_str());
+                mqttClient.onMessage(mqttCallback);
             } else {
                 Serial.println("Failed to reconnect to MQTT");
             }
