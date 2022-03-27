@@ -156,9 +156,7 @@ You can also take the output of the status topic and send that back in to the "A
  Anyway, if you want to try and fix something, send me a PR and I'll be happy to merge it.  The general theory is that I wanted to avoid too much esoteric C++ because I want to still be able to understand what it's doing, so bear that in mind.  
 
  # Final words
- Because of the poor range, it's starting to look like I would need one ESP32 within about 6 feet of each lights in order to make them work reliably.  This increases the cost of one set of 5M LED lights to about £13 (£7 for the lights, £5 for the ESP32).  e.g ["CNSUNWAY" 5M LED strip](https://amzn.to/3lwSw8e)  (affiliate link)
-
- vs the cheapest Wifi controlled lights I can find on Amazon for £15:  https://amzn.to/32XYTLv  (affiliate link)
+ Because of the poor range, it's starting to look like I would need one ESP32 within about 6 feet of each lights in order to make them work reliably.  This increases the cost of one set of 5M LED lights to about £13 (£7 for the lights, £5 for the ESP32).
 
  If I hadn't already bought a load of the Bluetooth ones, I would spend my money on the Wifi connected ones instead.  I haven't checked, but I would guess that the wifi ones are using the Tuya platform.  Tuya have documented their API and you can (currently) get an API key for free.  There are lots of projects out there to help you.  Save yourself a lot of time and bother.
  
