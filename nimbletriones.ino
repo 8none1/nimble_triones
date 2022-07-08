@@ -1,8 +1,8 @@
 #include <NimBLEDevice.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <ArduinoOTA.h> // This does work, but I /think/ it effects the reliability of BTLE. So disabled here.
-#include <ArduinoMqttClient.h>
+#include <ArduinoOTA.h>
+#include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <string>
 #include "wificreds.h"
@@ -18,8 +18,11 @@
 #define LED 2
 
 
-// Store IP address globally
+// Store IP address & MAC globally
 IPAddress ipAddr;
+byte mac[6];
+std::string hostname = HOSTNAME;
+unsigned long previousMillis = 0;
 
 // In order to support the automatic discovery stuff I want to keep a list of the known
 // devices and their RSSIs local to each ESP32.  I've pondered the right way of doing this
@@ -39,55 +42,70 @@ typedef struct {
 
 TrionesDevice localDevices[MAXDEVICES];
 
-//NimBLE Stuff
+// Triones service specfics
 const NimBLEUUID NOTIFY_SERVICE ("FFD0");
 const NimBLEUUID NOTIFY_CHAR    ("FFD4");
 const NimBLEUUID MAIN_SERVICE   ("FFD5");
 const NimBLEUUID WRITE_CHAR     ("FFD9");
 
-// MQTT Stuff
+// WiFi client
 WiFiClient wifiClient;
-MqttClient mqttClient(wifiClient);
-const char broker[] = "mqtt";
-const int  port = 1883;
-std::string mqttPubTopic;
-std::string mqttControlTopic;
-std::string mqttGlobalTopic;
-std::string subToPub;
 
+// MQTT client
+const char* BROKER = "mqtt"; // mqtt server name
+//PubSubClient::setBufferSize(1000);
+PubSubClient mqttClient(wifiClient);
+
+std::string mqttPubTopic     = "triones/status";
+std::string mqttControlTopic = "triones/control/";
+std::string mqttGlobalTopic  = mqttControlTopic  + "global";
+std::string subToPub         = mqttPubTopic + "/#";
+
+// Web Server
 WebServer server(80);
 
 // Forward declarations
 // I don't know how to C++
 bool findTrionesDevices();
 bool do_write(NimBLEAddress bleAddr, const uint8_t *payload, size_t len);
-unsigned long previousMillis = 0;
+
+void mqttReconnect(){
+    while (!mqttClient.connected()) {
+        Serial.println("Reconnecting to MQTT server...");
+        if (mqttClient.connect(hostname.c_str())) {
+            Serial.println("MQTT connected");
+            mqttClient.subscribe(mqttControlTopic.c_str());
+            mqttClient.subscribe(mqttGlobalTopic.c_str());
+            mqttClient.subscribe(subToPub.c_str());            
+        } else {
+            Serial.print("failed, rc=");
+            Serial.print(mqttClient.state());
+            Serial.println(" try again in 5 seconds");
+            // Wait 5 seconds before retrying
+            delay(5000);
+        }
+    }
+}
 
 void sendMqttMessage(const JsonDocument& local_doc ) {
-    mqttClient.beginMessage(mqttPubTopic.c_str());
-    serializeJson(local_doc, mqttClient);
-    mqttClient.endMessage();
+    char buffer[256];
+    serializeJson(local_doc, buffer);
+    mqttClient.publish(mqttPubTopic.c_str(), buffer);
 };
 void sendMqttMessage(const JsonDocument& local_doc, std::string topic) {
-    mqttClient.beginMessage(topic.c_str());
-    serializeJson(local_doc, mqttClient);
-    mqttClient.endMessage();
+    char buffer[256];
+    serializeJson(local_doc, buffer);
+    mqttClient.publish(topic.c_str(), buffer);
 };
 void sendMqttMessage(std::string message) {
-    mqttClient.beginMessage(mqttPubTopic.c_str());
-    mqttClient.print(message.c_str());
-    mqttClient.endMessage();
+    mqttClient.publish(mqttPubTopic.c_str(), message.c_str());
 };
 void sendMqttMessage(std::string message, std::string topic) {
-    mqttClient.beginMessage(topic.c_str());
-    mqttClient.print(message.c_str());
-    mqttClient.endMessage();
+    mqttClient.publish(topic.c_str(), message.c_str());
 }
 void sendMqttMessage(const __FlashStringHelper * ifsh) {
     const char *p = (const char PROGMEM *) ifsh;
-    mqttClient.beginMessage(mqttPubTopic.c_str());
-    mqttClient.print(p);
-    mqttClient.endMessage();
+    mqttClient.publish(mqttPubTopic.c_str(), p);
 };
 
 
@@ -104,9 +122,10 @@ class ClientCallbacks : public NimBLEClientCallbacks {
 
     void onDisconnect(NimBLEClient * pClient) {
         digitalWrite(LED, !digitalRead(LED));
-        StaticJsonDocument<64> tempDoc;
+        StaticJsonDocument<90> tempDoc;
         tempDoc["mac"] = pClient->getPeerAddress().toString();
         tempDoc["disconnected"] = true;
+        tempDoc["ctl"] = hostname.c_str();
         sendMqttMessage(tempDoc);
         Serial.print("Disconnected from device: ");
         const char* mac = tempDoc["mac"];
@@ -143,9 +162,10 @@ class ClientCallbacks : public NimBLEClientCallbacks {
 };
 
 void sendDeviceTable() {
-    StaticJsonDocument<512> tableDoc; // This feels like it's very big was 512
+    StaticJsonDocument<512> tableDoc;
     tableDoc["scanningHost"] = ipAddr.toString();
-    tableDoc["type"] = "scanTable";
+    tableDoc["ctl"] = hostname.c_str();
+    tableDoc["type"] = "deviceTable";
     JsonArray devices = tableDoc.createNestedArray("devices");
     Serial.println("Here's what's in the table:");
     for (int i=0; i < MAXDEVICES; i++) {
@@ -161,6 +181,8 @@ void sendDeviceTable() {
             device["rssi"] = localDevices[i].rssi;
         }
     };
+    Serial.print("size of devicetable: ");
+    Serial.println(tableDoc.memoryUsage());
     sendMqttMessage(tableDoc, mqttPubTopic); // the mqtt client has a payload limit of 256 bytes, if you're running more than 5 Triones devices this will be a problem.
 }
 
@@ -182,11 +204,12 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
             std::string deviceName = advertisedDevice->getName();
             if (deviceName.find(trionesName) != std::string::npos) {
                 digitalWrite(LED, !digitalRead(LED));
-                StaticJsonDocument<128> doc; // per https://arduinojson.org/v6/assistant/
+                StaticJsonDocument<164> doc; // per https://arduinojson.org/v6/assistant/
                 doc["mac"]  = advertisedDevice->getAddress().toString();
                 doc["name"] = advertisedDevice->getName();
                 doc["rssi"] = advertisedDevice->getRSSI();
                 doc["scanningDevice"] = WiFi.localIP().toString();
+                doc["ctl"] = hostname.c_str();
 
                 TrionesDevice discoveredDevice;
 
@@ -201,7 +224,7 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
                         //Serial.println("Checking dupe");
                         int realRssi = (rssi > 0 ? -rssi : rssi); // invert realRssi if it's remote
                         if (discoveredDevice.rssi > realRssi) {
-                            // We are better
+                            // The device we found in this scan has better RSSI
                             localDevices[i].rssi = discoveredDevice.rssi;
                             // Serial.print("Updated existing device with better rssi from scan: ");
                             // Serial.println(discoveredDevice.macAddr.c_str());
@@ -246,28 +269,28 @@ void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData,
             const uint8_t green = pData[7]; // G
             const uint8_t blue  = pData[8]; // B
             const std::string addr = pRemoteCharacteristic->getRemoteService()->getClient()->getPeerAddress().toString();
-            char buffer[120];
-            sprintf(buffer, "{\"type\":\"status report\",\"mac\":\"%s\", \"power\":%s, \"rgb\":[%u,%u,%u], \"speed\": %u, \"mode\":%u}", addr.c_str(), power_state, red, green, blue, speed, mode);
+            char buffer[150];
+            sprintf(buffer, "{\"type\":\"status report\",\"mac\":\"%s\", \"power\":%s, \"rgb\":[%u,%u,%u], \"speed\": %u, \"mode\":%u, \"ctl\":\"%s\"}", addr.c_str(), power_state, red, green, blue, speed, mode, hostname.c_str());
             sendMqttMessage(buffer);
             digitalWrite(LED, !digitalRead(LED));
         }
     }
 }
 
-void mqttCallback(int messageSize) {
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
     digitalWrite(LED, !digitalRead(LED));
-    std::string mt = mqttClient.messageTopic().c_str();
-    //Serial.print("Topic received: ");
-    //Serial.println(mt.c_str());
+    std::string mt = topic;
+    // Serial.print("Topic received: ");
+    // Serial.println(mt.c_str());
+    std::string scanTopic = mqttPubTopic + "/scan";
+    //scanTopic += "/scan";
 
-    std::string scanTopic = mqttPubTopic;
-    scanTopic += "/scan";
     if ( (mt != mqttControlTopic) && (mt != mqttGlobalTopic) && (mt != scanTopic) ) {
         return;
     }
 
     StaticJsonDocument<200> doc;  // Shrink this later? 200 seems OK though.  100 caused stack overflows
-    DeserializationError err = deserializeJson(doc, mqttClient);
+    DeserializationError err = deserializeJson(doc, payload, length);
 
     if (err) {
         Serial.println(F("Couldn't understand the JSON object. Giving up"));
@@ -284,12 +307,16 @@ void mqttCallback(int messageSize) {
             return;
         } else {
             std::string remoteMac = doc["mac"];
-            int8_t remoteRssi = doc["rssi"];
+            int8_t remoteRssi     = doc["rssi"];
+            std::string ctl       = doc["ctl"];
+            std::string name      = doc["name"];
             Serial.print("Triones device found by remote worker: ");
             Serial.print(remoteMac.c_str());
             Serial.print(" ");
             Serial.print("RSSI: ");
             Serial.println(remoteRssi);
+            // Serial.print("CTL: ");
+            // Serial.println(hostname.c_str());
 
             Serial.println("Looking in my device table.");
             for (int i=0; i < MAXDEVICES; i++) {
@@ -298,17 +325,35 @@ void mqttCallback(int messageSize) {
                 if (localMac == remoteMac) {
                     Serial.println("Found the same device in our list");
                     int8_t localRssi = localDevice.rssi;
+                    Serial.print("Local RSSI: ");
+                    Serial.println(localRssi);
+
                     if (localRssi <= remoteRssi) {
                         // Our device has worse rssi, so replace it with the remote one.
                         // We indicate remote by inverting the rssi so it's above zero
-                        Serial.println("Other end is better");
+                        Serial.print("Other end is better. Remote RSSI: ");
+                        Serial.println(remoteRssi);
                         localDevice.rssi = -remoteRssi;
+                        Serial.print("Inverted RSSI: ");
+                        Serial.println(localDevice.rssi);
                         localDevices[i] = localDevice;
                         return;
-                    } else {
-                        Serial.println("We have this device already, but our rssi is better");
+                    } else if (localRssi > remoteRssi && localRssi < 0) {
+                        // localRssi > remoteRssi
+                        Serial.println("We know about this device already, but our rssi is better. Sending an update to everyone");
                         // mac matches but new remote rssi is worse
-                        // so leave everything as is.
+                        // So remote doesn't know that we are in a better position to service this device.  Send a scan result to force others to refresh
+                        StaticJsonDocument<200> scanDoc;
+                        scanDoc["scanningDevice"] = myIpAddr;
+                        scanDoc["mac"] = localMac;
+                        scanDoc["rssi"] = localDevice.rssi;
+                        scanDoc["ctl"] = hostname.c_str();
+                        scanDoc["name"] = name;
+                        Serial.println("Sending a new fake scan result to everyone to refresh their device tables");
+                        sendMqttMessage(scanDoc, scanTopic);
+                        return;
+                    } else {
+                        Serial.println("Here");
                         return;
                     };
                 };
@@ -341,9 +386,10 @@ void mqttCallback(int messageSize) {
     // Deal with global requests
     if (mt == mqttGlobalTopic){
         if (action == "ping") {
-            StaticJsonDocument<64> ping_doc;
+            StaticJsonDocument<90> ping_doc;
             ping_doc["ipAddr"] = ipAddr.toString();
             ping_doc["active"] = true;
+            ping_doc["ctl"] = hostname.c_str();
             sendMqttMessage(ping_doc);
             digitalWrite(LED, !digitalRead(LED));
             return;
@@ -450,7 +496,7 @@ void mqttCallback(int messageSize) {
             NimBLEAddress addr = NimBLEAddress(mac);
             bool powerState = false;
             bool rgbSet = false;
-            uint8_t rgbArray[3] = {0};
+            uint16_t rgbArray[3] = {0}; // Try and cope with incorrect values being sent and still do the right thing.
 
             if ( ! doc["rgb"].isNull() ) {
                 // We need to validate these inputs...
@@ -459,7 +505,13 @@ void mqttCallback(int messageSize) {
                 rgbArray[2] = (doc["rgb"][2] < 256) ? doc["rgb"][2] : 255;
                 rgbSet = true;
             };
-                        
+
+            uint8_t brightness = 100;
+            if ( ! doc["percentage"].isNull() ) {
+                brightness = (doc["percentage"] <= 100 ? doc["percentage"] : 100);
+                brightness = (brightness > 0 ? brightness : 100); // If brightness is zero, set it to 100.  Brightness zero is not a thing, these lights have a specific power off state rather than zero brightness.
+            };
+                       
             // Power set
             if ( ! doc["power"].isNull()) {
                 digitalWrite(LED, !digitalRead(LED));
@@ -480,15 +532,8 @@ void mqttCallback(int messageSize) {
                 digitalWrite(LED, !digitalRead(LED));
                 //                          r   g   b   w  (cheaper lights don't have white leds, so leave as zero)
                 uint8_t payload[7] = {0x56, 00, 00, 00, 00, 0xF0, 0xAA};
-                int pp = 100;
-                if ( ! doc["percentage"].isNull() ) pp = doc["percentage"];
-                if ( pp == 0) pp = 100; // equally, if brightness is zero, we could power off, but I think this is better for now
 
-                Serial.print("Percentage: ");
-                Serial.println(pp);
-
-                if ((powerState) && (pp>0)) {
-                    // I've seen it send "power true" and "percent zero" so this might not always work
+                if (powerState) {
                     if ( (rgbArray[0] == 0) && (rgbArray[1] == 0) && (rgbArray[2] == 0) ) {
                         // Everything was zero, so presto changeo...
                         rgbArray[0] = 255;
@@ -497,7 +542,8 @@ void mqttCallback(int messageSize) {
                     }
                 };
 
-                float scale_factor = float(pp) / 100.0;
+                // Things are going to get strange in here.  Alexa sends the RGB values tweaked to account for the brightness.
+                float scale_factor = float(brightness) / 100.0;
                 for (int i=0; i<3; i++) {
                     rgbArray[i] = int(rgbArray[i] * scale_factor);
                     if (rgbArray[i] > 255) rgbArray[i] = 255;
@@ -507,7 +553,7 @@ void mqttCallback(int messageSize) {
                     if (rgbArray[i] > 255) {
                         rgbArray[i] = 255;
                     }
-                    payload[i+1] = rgbArray[i];
+                    payload[i+1] = uint8_t(rgbArray[i]);
                 };
 
                 if (do_write(addr, payload, sizeof(payload))) {
@@ -583,7 +629,7 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
                     Serial.println("Tried to reconnect to known device, but failed");
                 }
             } else {
-                Serial.println("It is connected");
+                //Serial.println("It is connected");
             }
         } else {
             Serial.println("No existing client, trying an old one");
@@ -628,6 +674,7 @@ bool do_write(NimBLEAddress bleAddr, const uint8_t* payload, size_t length){
             Serial.println("Retrying failed.  Sorry");
             StaticJsonDocument<128> tempDoc;
             tempDoc["ipAddr"] = WiFi.localIP().toString();
+            tempDoc["ctl"] = hostname.c_str();
             tempDoc["status"] = "Connect failed";
             tempDoc["state"] = false;
             tempDoc["mac"] = bleAddr.toString();
@@ -724,6 +771,17 @@ void setup (){
     
     // Set up Wifi
     Serial.println("Setting up Wifi...");
+    WiFi.macAddress(mac);
+    Serial.print("MAC Address: ");
+    Serial.println(WiFi.macAddress());
+    hostname = HOSTNAME;
+    char macChar[4] = {0};
+    sprintf(macChar, "%02X%02X", mac[4], mac[5]);
+    hostname.append(macChar);
+    Serial.print("Hostname: ");
+    Serial.println(hostname.c_str());
+    WiFi.hostname(hostname.c_str());
+
     WiFi.mode(WIFI_STA);
     WiFi.begin(STASSID, STAPSK);
     while (WiFi.waitForConnectResult() != WL_CONNECTED) {
@@ -732,50 +790,25 @@ void setup (){
         ESP.restart();
     }
     ipAddr = WiFi.localIP();
-    uint8_t oct = ipAddr[3];
-    std::string hostname = HOSTNAME;
-    hostname += std::to_string(oct);;
-    WiFi.hostname(hostname.c_str());
     Serial.print("IP address: ");
     Serial.println(ipAddr);
-    Serial.print("Hostname: ");
-    Serial.println(hostname.c_str());
+
 
     // Setup MQTT
-    if (mqttClient.connect(broker, port)) {
-        mqttControlTopic = "triones/control/";
-        mqttGlobalTopic = mqttControlTopic;
-        mqttControlTopic += ipAddr.toString().c_str();     
-        mqttGlobalTopic += "global";
-        mqttPubTopic = "triones/status";
-        subToPub = mqttPubTopic;
-        subToPub += "/#";
-
-        Serial.print("Control topic: ");
-        Serial.println(mqttControlTopic.c_str());
-        Serial.print("Global topic: ");
-        Serial.println(mqttGlobalTopic.c_str());
-        Serial.print("Pub topic: ");
-        Serial.println(mqttPubTopic.c_str());
-        mqttClient.subscribe(mqttControlTopic.c_str());
-        mqttClient.subscribe(mqttGlobalTopic.c_str());
-        mqttClient.subscribe(subToPub.c_str());
-        mqttClient.onMessage(mqttCallback);
-    } else {
-        Serial.println("MQTT connection failed!");
-        for (int c = 0; c < 1000; c++) {
-            digitalWrite(LED, !digitalRead(LED));
-            delay(250);
-        };
-        ESP.restart();
+    mqttControlTopic += ipAddr.toString().c_str();     
+    mqttClient.setServer(BROKER, 1883);
+    boolean bufferResize = mqttClient.setBufferSize(1000);
+    if (!bufferResize) {
+        Serial.println("Failed to resize MQTT buffer");
     }
+    mqttClient.setCallback(mqttCallback);
+    mqttReconnect();
+
+    // Setup LED
     pinMode(LED, OUTPUT);
     digitalWrite(LED, !digitalRead(LED));
 
     //Set up OTA
-    //  After all the effort I went to in order to enable OTA, it seems that OTA is quite chatty on the wifi
-    //  and makes BT LE harder.  So disabling it for now.  Maybe it can come back later.  If you need it, then there
-    //  only a few lines to uncomment
     ArduinoOTA.setHostname(hostname.c_str());
     ArduinoOTA.begin();
 
@@ -783,7 +816,7 @@ void setup (){
     tempDoc["ipAddr"] = WiFi.localIP().toString();
     tempDoc["status"] = "Ready";
     tempDoc["state"] = true;
-    tempDoc["hostname"] = hostname;
+    tempDoc["ctl"] = hostname.c_str();
     sendMqttMessage(tempDoc);
 
     server.on("/reboot", HTTP_POST, [](){
@@ -801,7 +834,7 @@ void setup (){
 
 
 void loop (){
-    mqttClient.poll();
+    mqttClient.loop();
     ArduinoOTA.handle();
     server.handleClient();
 
@@ -810,27 +843,9 @@ void loop (){
     if (currentMillis - previousMillis >= 2500) {
         previousMillis = millis();
         digitalWrite(LED, !digitalRead(LED));
-        if (!mqttClient.connected()) {
-            // It looks like we're dropping off mqtt sometimes, and we don't ever try
-            // to reconnect.  Because we're entirely dependant on receiving a message from
-            // mqtt in order to do something, we'll keep trying to reconnect every 2.5 seconds.
-            // If this doesn't fix it, we'll just reboot once a day.  Balls to it.
-            Serial.println("MQTT is not connected. Trying to reconnect...");
-            if (mqttClient.connect(broker, port)) {
-                Serial.println("Reconnected successfully.  Reconnecting to topics");
-                //Serial.print("Control topic: ");
-                //Serial.println(mqttControlTopic.c_str());
-                //Serial.print("Global topic: ");
-                //Serial.println(mqttGlobalTopic.c_str());
-                //Serial.print("Pub topic: ");
-                //Serial.println(mqttPubTopic.c_str());
-                mqttClient.subscribe(mqttControlTopic.c_str());
-                mqttClient.subscribe(mqttGlobalTopic.c_str());
-                mqttClient.subscribe(subToPub.c_str());
-                mqttClient.onMessage(mqttCallback);
-            } else {
-                Serial.println("Failed to reconnect to MQTT");
-            }
-        }
+    }
+
+    if (!mqttClient.connected()) {
+        mqttReconnect();
     }
 }
