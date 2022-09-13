@@ -181,8 +181,8 @@ void sendDeviceTable() {
             device["rssi"] = localDevices[i].rssi;
         }
     };
-    Serial.print("size of devicetable: ");
-    Serial.println(tableDoc.memoryUsage());
+    //Serial.print("size of devicetable: ");
+    //Serial.println(tableDoc.memoryUsage());
     sendMqttMessage(tableDoc, mqttPubTopic); // the mqtt client has a payload limit of 256 bytes, if you're running more than 5 Triones devices this will be a problem.
 }
 
@@ -223,7 +223,7 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
                         // but it might have come from somewhere else.  Who wins?
                         //Serial.println("Checking dupe");
                         int realRssi = (rssi > 0 ? -rssi : rssi); // invert realRssi if it's remote
-                        if (discoveredDevice.rssi > realRssi) {
+                        if (discoveredDevice.rssi > realRssi) { // TODO:  There seems to be a logic problem here somewhere where its not sending advertising when I think it should be.  We're only sending scantopic messages when the device we found was better?
                             // The device we found in this scan has better RSSI
                             localDevices[i].rssi = discoveredDevice.rssi;
                             // Serial.print("Updated existing device with better rssi from scan: ");
@@ -277,7 +277,7 @@ void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData,
     }
 }
 
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
+void mqttCallback(char* topic, const byte* payload, unsigned int length) {
     digitalWrite(LED, !digitalRead(LED));
     std::string mt = topic;
     // Serial.print("Topic received: ");
@@ -299,7 +299,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     }
 
     if (mt == scanTopic) {
-        Serial.println("MQTT Scan result received");
+        //Serial.println("MQTT Scan result received");
         // A scan result was received
         std::string myIpAddr = ipAddr.toString().c_str();
         if (doc["scanningDevice"] == myIpAddr) {
@@ -562,8 +562,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
                     sendMqttMessage(F("{\"state\":false, \"message\":\"RGB set failed\"}"));
                 }
             };
-
-            if (doc["mode"]) {
+            
+            if ( ! doc["mode"].isNull() ) {
+                Serial.println("In Mode set");
                 digitalWrite(LED, !digitalRead(LED));
                 // # 37 : 0x25: Seven color cross fade
                 // # 38 : 0x26: Red gradual change
@@ -783,6 +784,7 @@ void setup (){
     WiFi.hostname(hostname.c_str());
 
     WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
     WiFi.begin(STASSID, STAPSK);
     while (WiFi.waitForConnectResult() != WL_CONNECTED) {
         Serial.println("Couldn't connect to Wifi! Rebooting...");
